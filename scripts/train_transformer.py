@@ -254,21 +254,36 @@ if __name__ == '__main__':
     # Boost reicht die normale Basis-LR nicht, um die Fusion aus ihrem Init-nahen Fixpunkt
     # herauszubewegen -- der Repraesentations-Kollaps vom 2026-07-09-Checkpoint (Trend-
     # Vorhersage praktisch konstant = Trainings-Klassenpriorisierung, egal welches Beispiel).
+    # Nach dem Fusion-Fix (siehe unten) spezialisiert die Attention jetzt wirklich, aber der
+    # trend-Decoder-Kopf (erster von 8 sequenziellen Decoder-Schritten, TARGET_NAMES[0], hat
+    # als einziger keinerlei Vorwissen aus vorherigen Schritten) blieb trotzdem bei der reinen
+    # Trainings-Mehrheitsklasse haengen (Accuracy = exakt der Anteil der haeufigsten Klasse in
+    # den Validierungsdaten, beobachtet 2026-07-09). Gleiches Prinzip wie bei der Fusion: eigene
+    # hoehere LR nur fuer diesen Kopf, um ihn aus seinem eigenen Bias-dominierten Fixpunkt zu bewegen.
     base_lr = train_cfg['learning_rate']
     fusion_lr = base_lr * train_cfg.get('fusion_lr_multiplier', 1.0)
     fusion_param_ids = {id(p) for p in model.fusion.parameters()}
-    other_params = [p for p in model.parameters() if id(p) not in fusion_param_ids]
+    trend_head_param_ids = {id(p) for p in model.decoder.heads[0].parameters()}
+    boosted_ids = fusion_param_ids | trend_head_param_ids
+    other_params = [p for p in model.parameters() if id(p) not in boosted_ids]
     optimizer = torch.optim.Adam([
         {'params': other_params, 'lr': base_lr},
         {'params': model.fusion.parameters(), 'lr': fusion_lr},
+        {'params': model.decoder.heads[0].parameters(), 'lr': fusion_lr},
     ])
-    logger.info(f"Optimizer: Basis-LR={base_lr}, Fusion-Attention-LR={fusion_lr} "
-                f"({train_cfg.get('fusion_lr_multiplier', 1.0)}x)")
+    logger.info(f"Optimizer: Basis-LR={base_lr}, Fusion-Attention-LR={fusion_lr}, "
+                f"Trend-Kopf-LR={fusion_lr} ({train_cfg.get('fusion_lr_multiplier', 1.0)}x)")
 
-    # LR-Warmup: reduziert zusaetzlich das Risiko frueher Instabilitaet in beiden Gruppen.
+    # LR-Warmup NUR fuer die Basis-Parameter: fuer die geboosteten Gruppen (Fusion, Trend-Kopf)
+    # drosselt der Warmup genau die ersten Epochen, in denen sie den Symmetriebruch aus ihrem
+    # uniformen/Bias-Fixpunkt heraus schaffen muessen (im 5-Epochen-Diagnoselauf mit sofort
+    # voller 10x-LR trat die Spezialisierung schon ab Epoche 4 auf; im vollen Lauf MIT Warmup
+    # fuer beide Gruppen blieb sie trotz 19 Epochen komplett kollabiert). Geboostete Gruppen
+    # bekommen daher von Anfang an die volle LR, nur die Basis-Parameter werden sanft hochgefahren.
     warmup_epochs = max(1, train_cfg.get('lr_warmup_epochs', 0))
-    lr_lambda = (lambda epoch: min(1.0, (epoch + 1) / warmup_epochs)) if train_cfg.get('lr_warmup_epochs', 0) else (lambda epoch: 1.0)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    warmup_lambda = (lambda epoch: min(1.0, (epoch + 1) / warmup_epochs)) if train_cfg.get('lr_warmup_epochs', 0) else (lambda epoch: 1.0)
+    constant_lambda = lambda epoch: 1.0
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [warmup_lambda, constant_lambda, constant_lambda])
     grad_clip_norm = train_cfg.get('grad_clip_norm', 0.0)
 
     checkpoint_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'market_transformer.pt')
@@ -301,8 +316,9 @@ if __name__ == '__main__':
 
         val_accuracies = evaluate_accuracy(model, val_loader, device)
         avg_val_acc = sum(val_accuracies.values()) / len(val_accuracies)
+        last_lrs = scheduler.get_last_lr()
         logger.info(f"  Epoche {epoch + 1}/{epochs}: Trainings-Loss = {avg_loss:.4f}, "
-                    f"OOS-Genauigkeit = {avg_val_acc:.1%}, LR = {scheduler.get_last_lr()[0]:.6f}")
+                    f"OOS-Genauigkeit = {avg_val_acc:.1%}, LR(Basis)={last_lrs[0]:.6f}, LR(Boost)={last_lrs[1]:.6f}")
 
         if avg_val_acc > best_val_acc + min_delta:
             best_val_acc = avg_val_acc
