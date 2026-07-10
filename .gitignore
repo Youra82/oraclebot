@@ -14,3 +14,7 @@ artifacts/datasets/*.jsonl
 artifacts/datasets/ohlcv_*.pkl
 artifacts/datasets/tokenizer*.pkl
 artifacts/datasets/market_transformer.pt
+
+# Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant
+# (siehe artifacts/results/seed_reliability*.json fuer die ausgewerteten, aufbewahrten Studien).
+artifacts/datasets/training_diagnostics.json

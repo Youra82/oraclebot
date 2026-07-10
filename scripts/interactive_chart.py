@@ -26,7 +26,7 @@ import pandas as pd
 import torch
 
 from backtest_signal import (
-    ARTIFACTS_DIR, load_ohlcv_by_symbol, load_settings, load_model_and_scaler,
+    ARTIFACTS_DIR, load_ohlcv_by_symbol, load_settings, load_model_and_scaler, load_tree_ensemble,
     load_val_examples_by_symbol,
 )
 from oraclebot.model.reconstruct import reconstruct_simple_candle
@@ -101,6 +101,7 @@ def generate_chart(symbol: str, start_date: str, end_date: str, settings: dict) 
 
     device = torch.device('cpu')
     model, scaler = load_model_and_scaler(settings, device)
+    tree_ensemble = load_tree_ensemble()
 
     ds_cfg = settings['dataset_settings']
     model_cfg = settings['model_settings']
@@ -133,7 +134,7 @@ def generate_chart(symbol: str, start_date: str, end_date: str, settings: dict) 
 
     predictions = predict_for_examples(
         examples_in_range, model, scaler, ohlcv_by_symbol, model_cfg['timeframes'],
-        beam_width=model_cfg['beam_width'], device=device) if examples_in_range else []
+        beam_width=model_cfg['beam_width'], device=device, tree_ensemble=tree_ensemble) if examples_in_range else []
 
     n_bars = len(real_df)
     x_idx = list(range(n_bars))

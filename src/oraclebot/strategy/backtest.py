@@ -35,10 +35,16 @@ def _lookup_prev_close_and_atr(daily_df: pd.DataFrame, ref_time: pd.Timestamp, a
 
 
 def predict_for_examples(examples: list, model, scaler, ohlcv_by_symbol: dict, timeframes: list,
-                          atr_window: int = 14, beam_width: int = 5, device=None) -> list:
+                          atr_window: int = 14, beam_width: int = 5, device=None,
+                          tree_ensemble=None) -> list:
     """Fuehrt fuer jedes Beispiel eine Modell-Vorhersage durch und rekonstruiert die Preis-Koordinaten.
 
     Nutzt die bereits im Beispiel gespeicherten Feature-Fenster (kein erneutes compute_features).
+
+    `tree_ensemble`: optionaler TreeEnsemblePredictor (Hybrid-Ansatz, 2026-07-10) -- ersetzt die
+    Transformer-eigenen Vorhersagen fuer TREE_TARGETS (trend/close_position/upper_wick/
+    lower_wick, die schwachen, kollapsanfaelligen Ziele) durch RandomForest-Vorhersagen auf
+    denselben Features. range/gap_yn/inside_outside_day/high_first bleiben vom Transformer.
 
     Returns:
         Liste von dicts: {symbol, date, reference_time, target, prediction, prev_close, atr, coords}.
@@ -61,6 +67,12 @@ def predict_for_examples(examples: list, model, scaler, ohlcv_by_symbol: dict, t
         }
         with torch.no_grad():
             prediction = model.predict_beam(features, beam_width=beam_width)
+
+        if tree_ensemble is not None:
+            tree_prediction = tree_ensemble.predict(example, scaler, timeframes)
+            for target in tree_ensemble.models:
+                prediction[target] = tree_prediction[target]
+                prediction['step_probabilities'][target] = tree_prediction['tree_probabilities'][target]
 
         prev_close, atr_value = _lookup_prev_close_and_atr(daily_df, ref_time, atr_window)
         coords = reconstruct_candle(
@@ -122,13 +134,14 @@ def _make_outcome(result: str, exit_price: float, signal: dict) -> dict:
 def run_signal_backtest(examples: list, model, scaler, ohlcv_by_symbol: dict, timeframes: list,
                          strategy_cfg: dict, intraday_timeframe: str = '4h',
                          atr_window: int = 14, start_capital: float = 100.0,
-                         device=None) -> dict:
+                         device=None, tree_ensemble=None) -> dict:
     """Walk-Forward-Backtest: fuer jedes Beispiel Vorhersage -> Signal -> echtes Ergebnis pruefen.
 
     Args:
         examples: Trainingsbeispiele (idealerweise die Out-of-Sample-Validierungsmenge).
         strategy_cfg: dict mit 'min_trend_confidence', 'sl_range_fraction', 'risk_reward',
             'risk_per_trade_pct', 'beam_width'.
+        tree_ensemble: optionaler TreeEnsemblePredictor (Hybrid-Ansatz), siehe predict_for_examples.
 
     Returns:
         dict mit 'trades' (Liste), 'trades_count', 'win_rate', 'total_pnl_pct',
@@ -136,7 +149,8 @@ def run_signal_backtest(examples: list, model, scaler, ohlcv_by_symbol: dict, ti
     """
     predictions = predict_for_examples(
         examples, model, scaler, ohlcv_by_symbol, timeframes,
-        atr_window=atr_window, beam_width=strategy_cfg.get('beam_width', 5), device=device)
+        atr_window=atr_window, beam_width=strategy_cfg.get('beam_width', 5), device=device,
+        tree_ensemble=tree_ensemble)
 
     trades = []
     capital = start_capital

@@ -22,6 +22,7 @@ from oraclebot.data.targets import (CLOSE_POS_LABELS, GAP_LABELS, HIGH_FIRST_LAB
                                      TREND_LABELS, WICK_LABELS)
 from oraclebot.model.reconstruct import reconstruct_candle
 from oraclebot.model.transformer import MarketTransformer
+from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
 from oraclebot.utils.data_fetch import fetch_ohlcv
 
@@ -116,6 +117,18 @@ if __name__ == '__main__':
     logger.info(f"\nModell geladen: {checkpoint_path}")
 
     prediction = model.predict_beam(feature_tensors, beam_width=model_cfg['beam_width'])
+
+    # Hybrid-Ansatz (2026-07-10): trend/close_position/upper_wick/lower_wick kommen, falls
+    # trainiert, vom RandomForest-Ensemble statt vom Transformer-Decoder -- siehe tree_ensemble.py.
+    tree_ensemble_path = os.path.join(artifacts_dir, 'tree_ensemble.pkl')
+    if os.path.exists(tree_ensemble_path):
+        tree_ensemble = TreeEnsemblePredictor.load(tree_ensemble_path)
+        example_like = {tf: window for tf, window in features_by_timeframe.items()}
+        tree_prediction = tree_ensemble.predict(example_like, scaler, timeframes)
+        for name in tree_ensemble.models:
+            prediction[name] = tree_prediction[name]
+            prediction['step_probabilities'][name] = tree_prediction['tree_probabilities'][name]
+        logger.info("Hybrid-Vorhersage: trend/close_position/upper_wick/lower_wick vom RandomForest-Ensemble.")
 
     logger.info(f"\nVorhersage fuer die Tageskerze am {target_date.date()}:")
     for name in TARGET_NAMES:

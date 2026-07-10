@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-07-10T13:46:13.625822+00:00",
+  "symbol": "BTC/USDT:USDT",
+  "history_days": 900,
+  "n_runs": 3,
+  "collapse_rate_pct": 100.0,
+  "config_snapshot": {
+    "diversity_weight": 4.0,
+    "fusion_lr_multiplier": 10.0,
+    "batch_size": 16,
+    "boosted_targets": [
+      "trend"
+    ]
+  },
+  "runs": [
+    {
+      "run": 1,
+      "error": false,
+      "best_epoch": 5,
+      "best_val_acc": 54.9,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "1": 132
+      },
+      "trend_accuracy": 0.4772727272727273,
+      "n_examples": 132
+    },
+    {
+      "run": 2,
+      "error": false,
+      "best_epoch": 12,
+      "best_val_acc": 54.5,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "0": 132
+      },
+      "trend_accuracy": 0.5227272727272727,
+      "n_examples": 132
+    },
+    {
+      "run": 3,
+      "error": false,
+      "best_epoch": 2,
+      "best_val_acc": 54.9,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "1": 132
+      },
+      "trend_accuracy": 0.4772727272727273,
+      "n_examples": 132
+    }
+  ]
+}

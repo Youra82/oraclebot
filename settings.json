@@ -73,9 +73,9 @@
         "boosted_targets": ["trend"]
     },
     "strategy_settings": {
-        "min_trend_confidence": 0.50,
+        "min_trend_confidence": 0.35,
         "sl_range_fraction": 0.5,
-        "risk_reward": 3.0,
+        "risk_reward": 1.5,
         "risk_per_trade_pct": 1.0,
         "live_trading_enabled": false
     }

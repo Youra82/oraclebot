@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-07-10T13:26:18.089191+00:00",
+  "symbol": "BTC/USDT:USDT",
+  "history_days": 900,
+  "n_runs": 5,
+  "collapse_rate_pct": 60.0,
+  "runs": [
+    {
+      "run": 1,
+      "error": false,
+      "best_epoch": 1,
+      "best_val_acc": 54.2,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "0": 132
+      },
+      "trend_accuracy": 0.5227272727272727,
+      "n_examples": 132
+    },
+    {
+      "run": 2,
+      "error": false,
+      "best_epoch": 3,
+      "best_val_acc": 56.2,
+      "verdict": "Robust",
+      "collapsed": false,
+      "trend_distribution": {
+        "1": 127,
+        "0": 5
+      },
+      "trend_accuracy": 0.5,
+      "n_examples": 132
+    },
+    {
+      "run": 3,
+      "error": false,
+      "best_epoch": 1,
+      "best_val_acc": 53.9,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "0": 132
+      },
+      "trend_accuracy": 0.5227272727272727,
+      "n_examples": 132
+    },
+    {
+      "run": 4,
+      "error": false,
+      "best_epoch": 11,
+      "best_val_acc": 56.1,
+      "verdict": "Robust",
+      "collapsed": false,
+      "trend_distribution": {
+        "0": 93,
+        "1": 39
+      },
+      "trend_accuracy": 0.5303030303030303,
+      "n_examples": 132
+    },
+    {
+      "run": 5,
+      "error": false,
+      "best_epoch": 1,
+      "best_val_acc": 54.9,
+      "verdict": "Robust",
+      "collapsed": true,
+      "trend_distribution": {
+        "1": 132
+      },
+      "trend_accuracy": 0.4772727272727273,
+      "n_examples": 132
+    }
+  ]
+}

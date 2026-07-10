@@ -20,6 +20,7 @@ from oraclebot.data.dataset import load_dataset_jsonl
 from oraclebot.data.features import FEATURE_NAMES
 from oraclebot.data.scaler import FeatureScaler
 from oraclebot.model.transformer import MarketTransformer
+from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.backtest import run_signal_backtest
 from oraclebot.utils.data_fetch import fetch_all_timeframes
 
@@ -56,6 +57,17 @@ def load_model_and_scaler(settings: dict, device):
     scaler_path = os.path.join(ARTIFACTS_DIR, 'scaler_full.pkl')
     scaler = FeatureScaler.load(scaler_path)
     return model, scaler
+
+
+def load_tree_ensemble():
+    """Hybrid-Ansatz (2026-07-10): RandomForest-Ensemble fuer die schwachen, kollapsanfaelligen
+
+    Ziele (trend/close_position/upper_wick/lower_wick), siehe tree_ensemble.py. Gibt None
+    zurueck (kein Fehler) wenn noch keins trainiert wurde -- Aufrufer fallen dann auf die reine
+    Transformer-Vorhersage zurueck (Rueckwaertskompatibilitaet zu Checkpoints vor 2026-07-10).
+    """
+    path = os.path.join(ARTIFACTS_DIR, 'tree_ensemble.pkl')
+    return TreeEnsemblePredictor.load(path) if os.path.exists(path) else None
 
 
 def load_val_examples_by_symbol(dataset_path: str, val_split: float) -> dict:
@@ -114,6 +126,7 @@ def run_mode_1(settings: dict, start_capital: float):
     print(f"{CYAN}--- OracleBot Signal-Backtest (Einzel-Modus) ---{NC}")
     device = torch.device('cpu')
     model, scaler = load_model_and_scaler(settings, device)
+    tree_ensemble = load_tree_ensemble()
 
     ds_cfg = settings['dataset_settings']
     model_cfg = settings['model_settings']
@@ -132,7 +145,7 @@ def run_mode_1(settings: dict, start_capital: float):
     all_val_examples = [ex for exs in val_by_symbol.values() for ex in exs]
     strategy_cfg = {**strategy_cfg, 'beam_width': model_cfg['beam_width']}
     result = run_signal_backtest(all_val_examples, model, scaler, ohlcv_by_symbol, model_cfg['timeframes'],
-                                  strategy_cfg, start_capital=start_capital)
+                                  strategy_cfg, start_capital=start_capital, tree_ensemble=tree_ensemble)
 
     rows = [result_row(f"Alle ({', '.join(symbols)})", result)]
     print_results_table(rows, "OracleBot Signal-Backtest (Out-of-Sample)")
@@ -144,6 +157,7 @@ def run_mode_2(settings: dict, start_capital: float):
     print(f"{CYAN}--- OracleBot Signal-Backtest (Manuelle Symbol-Auswahl) ---{NC}")
     device = torch.device('cpu')
     model, scaler = load_model_and_scaler(settings, device)
+    tree_ensemble = load_tree_ensemble()
 
     ds_cfg = settings['dataset_settings']
     model_cfg = settings['model_settings']
@@ -178,13 +192,13 @@ def run_mode_2(settings: dict, start_capital: float):
         if not examples:
             continue
         result = run_signal_backtest(examples, model, scaler, ohlcv_by_symbol, model_cfg['timeframes'],
-                                      strategy_cfg, start_capital=start_capital)
+                                      strategy_cfg, start_capital=start_capital, tree_ensemble=tree_ensemble)
         rows.append(result_row(symbol, result))
 
     combined_examples = [ex for s in selected for ex in val_by_symbol.get(s, [])]
     if len(selected) > 1 and combined_examples:
         combined_result = run_signal_backtest(combined_examples, model, scaler, ohlcv_by_symbol, model_cfg['timeframes'],
-                                               strategy_cfg, start_capital=start_capital)
+                                               strategy_cfg, start_capital=start_capital, tree_ensemble=tree_ensemble)
         rows.append(result_row(f"Kombiniert ({len(selected)} Symbole)", combined_result))
 
     print_results_table(rows, "OracleBot Signal-Backtest (Manuelle Auswahl)")
@@ -203,6 +217,7 @@ def run_mode_3(settings: dict, start_capital: float, max_dd_limit: float, min_tr
     print(f"{CYAN}--- OracleBot Signal-Backtest (Automatische Parameter-Optimierung) ---{NC}")
     device = torch.device('cpu')
     model, scaler = load_model_and_scaler(settings, device)
+    tree_ensemble = load_tree_ensemble()
 
     ds_cfg = settings['dataset_settings']
     model_cfg = settings['model_settings']
@@ -233,7 +248,7 @@ def run_mode_3(settings: dict, start_capital: float, max_dd_limit: float, min_tr
             'beam_width': model_cfg['beam_width'],
         }
         result = run_signal_backtest(all_val_examples, model, scaler, ohlcv_by_symbol, model_cfg['timeframes'],
-                                      strategy_cfg, start_capital=start_capital)
+                                      strategy_cfg, start_capital=start_capital, tree_ensemble=tree_ensemble)
         label = f"conf={min_conf:.2f} rr={rr:.1f}"
         rows.append(result_row(label, result))
 

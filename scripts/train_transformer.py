@@ -26,6 +26,7 @@ from oraclebot.data.targets import TARGET_NAMES
 from oraclebot.model.dataset_torch import ContinuousMarketDataset, collate_fn
 from oraclebot.model.reconstruct import reconstruct_candle
 from oraclebot.model.transformer import MarketTransformer, TARGET_CARDINALITIES, estimate_attention_memory_bytes
+from oraclebot.model.tree_ensemble import TREE_TARGETS, TreeEnsemblePredictor, flat_features
 from oraclebot.utils.data_fetch import fetch_all_timeframes
 
 # Durchschnittliche Trefferquote von reinem Raten (1/Anzahl Klassen je Zielvariable),
@@ -67,6 +68,43 @@ def evaluate_accuracy(model, loader, device) -> dict:
                 preds = logits[name].argmax(dim=-1).cpu()
                 correct[name] += (preds == targets[name]).sum().item()
     return {name: correct[name] / total for name in TARGET_NAMES} if total else {}
+
+
+def compute_epoch_diagnostics(model, loader, device, boosted_targets: list) -> dict:
+    """Objektive Kennzahlen zum Trainingsverlauf, unabhaengig von der Trainings-Loss selbst --
+
+    fuer die Kollaps-Zuverlaessigkeits-Untersuchung (2026-07-10): erlaubt zu pruefen, ob sich
+    spaeter kollabierende von divers bleibenden Laeufen schon frueh (Epoche 1-3) unterscheiden
+    lassen, statt nur am Trainingsende festzustellen "kollabiert oder nicht".
+
+    - tf_weight_std: Streuung der GEMITTELTEN Fusion-Attention-Gewichte ueber die Timeframes
+      (niedrig = uniforme Fusion, hoch = spezialisiert -- siehe Fusion-Kollaps vom 2026-07-09).
+    - trend_pred_std: Streuung der P(bullish)-Einzelvorhersagen ueber das Validierungsset
+      (dieselbe Groesse wie der Diversitaets-Regularisierer im Training, hier aber als reine
+      MESSUNG auf ungesehenen Daten, nicht als Trainingsziel).
+    - Gewichtsnormen der geboosteten Parameter (Fusion-Attention, geboostete Koepfe), um zu
+      sehen ob/wie schnell sie sich vom Init entfernen.
+    """
+    model.eval()
+    all_tf_weights, all_trend_probs = [], []
+    with torch.no_grad():
+        for features, targets in loader:
+            features = {tf: t.to(device) for tf, t in features.items()}
+            logits, tf_weights = model(features, targets=None)
+            all_tf_weights.append(tf_weights.cpu())
+            all_trend_probs.append(F.softmax(logits['trend'], dim=-1)[:, -1].cpu())
+    tf_weights_cat = torch.cat(all_tf_weights, dim=0)
+    trend_probs_cat = torch.cat(all_trend_probs, dim=0)
+
+    diagnostics = {
+        'tf_weight_std': float(tf_weights_cat.mean(dim=0).std().item()),
+        'trend_pred_std': float(trend_probs_cat.std(unbiased=False).item()),
+        'fusion_attn_weight_norm': float(model.fusion.attention.in_proj_weight.norm().item()),
+    }
+    for name in boosted_targets:
+        idx = model.decoder.step_names.index(name)
+        diagnostics[f'{name}_head_weight_norm'] = float(model.decoder.heads[idx][-1].weight.norm().item())
+    return diagnostics
 
 
 def _brier_score(probs: np.ndarray, labels: np.ndarray, num_classes: int) -> float:
@@ -299,6 +337,8 @@ if __name__ == '__main__':
     best_val_acc = -1.0
     best_epoch = 0
     patience_counter = 0
+    epoch_diagnostics_log = []
+    diagnostics_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'training_diagnostics.json')
 
     logger.info(f"\nTrainiere auf {device} fuer max. {epochs} Epochen (d_model={d_model}, "
                 f"Early-Stopping-Geduld={patience})...")
@@ -323,6 +363,16 @@ if __name__ == '__main__':
         last_lrs = scheduler.get_last_lr()
         logger.info(f"  Epoche {epoch + 1}/{epochs}: Trainings-Loss = {avg_loss:.4f}, "
                     f"OOS-Genauigkeit = {avg_val_acc:.1%}, LR(Basis)={last_lrs[0]:.6f}, LR(Boost)={last_lrs[1]:.6f}")
+
+        # Objektive Verlaufs-Kennzahlen fuer die Kollaps-Zuverlaessigkeits-Untersuchung
+        # (2026-07-10) -- unabhaengig von avg_val_acc gespeichert, damit man nachtraeglich
+        # pruefen kann ob sich kollabierende Laeufe schon frueh (Epoche 1-3) unterscheiden.
+        diag = compute_epoch_diagnostics(model, val_loader, device, boosted_targets)
+        diag['epoch'] = epoch + 1
+        diag['avg_val_acc'] = avg_val_acc
+        epoch_diagnostics_log.append(diag)
+        with open(diagnostics_path, 'w', encoding='utf-8') as f:
+            json.dump(epoch_diagnostics_log, f, indent=2)
 
         if avg_val_acc > best_val_acc + min_delta:
             best_val_acc = avg_val_acc
@@ -364,11 +414,36 @@ if __name__ == '__main__':
     logger.info(f"\nBester Checkpoint gespeichert: {best_checkpoint_path}")
     logger.info(f"Letzter Zwischenstand gespeichert: {checkpoint_path}")
 
-    logger.info("\nBeispiel-Vorhersage (Beam Search) fuer das letzte Validierungsbeispiel:")
+    # Hybrid-Ansatz (2026-07-10): trend/close_position/upper_wick/lower_wick werden NICHT vom
+    # Transformer-Decoder uebernommen (kollabiert dort in ~80% der Laeufe auf die Trainings-
+    # Klassenpriorisierung, siehe seed_reliability-Untersuchung), sondern von einem
+    # RandomForest auf denselben Features -- kollabierte in keinem heutigen Test und war beim
+    # trend-Ziel meist treffsicherer. range/gap_yn/inside_outside_day/high_first bleiben beim
+    # Transformer (dort kein Kollaps beobachtet).
+    logger.info(f"\nTrainiere RandomForest-Ensemble fuer {TREE_TARGETS} (Hybrid-Ansatz)...")
+    tree_ensemble = TreeEnsemblePredictor().fit(train_examples, scaler, timeframes)
+    tree_ensemble_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'tree_ensemble.pkl')
+    tree_ensemble.save(tree_ensemble_path)
+    logger.info(f"RandomForest-Ensemble gespeichert: {tree_ensemble_path}")
+
+    X_train_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in train_examples])
+    X_val_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in val_examples])
+    tree_train_acc = {t: tree_ensemble.models[t].score(X_train_flat, np.array([ex['target'][t] for ex in train_examples]))
+                       for t in TREE_TARGETS}
+    tree_val_acc = {t: tree_ensemble.models[t].score(X_val_flat, np.array([ex['target'][t] for ex in val_examples]))
+                     for t in TREE_TARGETS}
+    logger.info(f"  RandomForest In-Sample: { {k: f'{v:.1%}' for k, v in tree_train_acc.items()} }")
+    logger.info(f"  RandomForest Out-of-Sample: { {k: f'{v:.1%}' for k, v in tree_val_acc.items()} }")
+
+    logger.info("\nBeispiel-Vorhersage (Hybrid: Beam Search + RandomForest) fuer das letzte Validierungsbeispiel:")
     last_example = val_examples[-1]
     last_features, last_targets = val_ds[len(val_ds) - 1]
     last_features = {tf: t.unsqueeze(0).to(device) for tf, t in last_features.items()}
     prediction = model.predict_beam(last_features, beam_width=model_cfg['beam_width'])
+    tree_prediction = tree_ensemble.predict(last_example, scaler, timeframes)
+    for t in TREE_TARGETS:
+        prediction[t] = tree_prediction[t]
+        prediction['step_probabilities'][t] = tree_prediction['tree_probabilities'][t]
     logger.info(f"  Symbol: {last_example['symbol']}")
     logger.info(f"  Vorhergesagt: { {k: v for k, v in prediction.items() if k in TARGET_NAMES} }")
     logger.info(f"  Tatsaechlich: { {name: last_targets[name].item() for name in TARGET_NAMES} }")
