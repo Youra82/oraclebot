@@ -561,9 +561,13 @@ Modus 3 zeigt das beste `min_trend_confidence`/`risk_reward`-Paar — manuell in
 PYTHONPATH=src python scripts/predict_next_candle.py
 ```
 
-Holt frische Marktdaten (kein Cache), lädt den trainierten Checkpoint, gibt Vorhersage +
-Preis-Koordinaten + Handelssignal aus, sendet bei `telegram_enabled=true` zusätzlich Chart +
-Text per Telegram.
+Holt Marktdaten über einen inkrementellen lokalen Cache (`artifacts/datasets/ohlcv_live_*.pkl`,
+gitignored), lädt den trainierten Checkpoint, gibt Vorhersage + Preis-Koordinaten +
+Handelssignal aus, sendet bei `telegram_enabled=true` zusätzlich Chart + Text per Telegram.
+Erster Lauf holt die volle benötigte Historie und legt den Cache an; jeder weitere Lauf holt
+nur die Kerzen seit dem letzten Cache-Stand nach (bei `1M`/`1w` oft null neue Anfragen statt
+einer vollen Pagination-Kette) — spart Zeit und reduziert die Angriffsfläche für die
+Bitget-Pagination-Eigenheiten bei grob aufgelösten Timeframes (siehe `data_fetch.py`).
 
 ```bash
 # Vorschau: behandelt die noch laufende Tageskerze als abgeschlossen,
