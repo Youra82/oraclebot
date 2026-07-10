@@ -4,6 +4,7 @@ ccxt==4.3.5
 
 # Telegram-Benachrichtigungen
 requests
+matplotlib
 
 # Data
 numpy

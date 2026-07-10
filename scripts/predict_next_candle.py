@@ -24,8 +24,9 @@ from oraclebot.model.reconstruct import reconstruct_candle
 from oraclebot.model.transformer import MarketTransformer
 from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
+from oraclebot.utils.chart_png import plot_prediction_chart
 from oraclebot.utils.data_fetch import fetch_ohlcv
-from oraclebot.utils.telegram import send_message
+from oraclebot.utils.telegram import send_message, send_photo
 
 LABELS_BY_TARGET = {
     'trend': TREND_LABELS, 'range': RANGE_LABELS, 'close_position': CLOSE_POS_LABELS,
@@ -238,6 +239,15 @@ if __name__ == '__main__':
         secret_path = os.path.join(os.path.dirname(__file__), '..', 'secret.json')
         telegram_cfg = load_secrets(secret_path).get('telegram', {})
         message = format_telegram_message(symbol, target_date, prediction, coords, signal)
-        send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
+
+        if notif_cfg.get('telegram_send_chart', True):
+            chart_dir = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'charts')
+            os.makedirs(chart_dir, exist_ok=True)
+            chart_path = os.path.join(chart_dir, 'telegram_latest.png')
+            plot_prediction_chart(daily_df, prev_close, atr_value, prediction['trend'], prediction['range'],
+                                   target_date, chart_path)
+            send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=message)
+        else:
+            send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
     else:
         logger.info("(notification_settings.telegram_enabled=false -- keine Telegram-Nachricht gesendet.)")

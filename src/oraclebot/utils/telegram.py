@@ -9,6 +9,25 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+def send_photo(bot_token: str, chat_id: str, file_path: str, caption: str = ""):
+    """Sendet ein Bild (PNG/JPG) an einen Telegram-Chat. Caption bleibt unescaped/plain
+    (kein parse_mode gesetzt) -- anders als send_message(), das MarkdownV2 erwartet."""
+    if not bot_token or not chat_id:
+        logger.warning("Telegram Bot-Token oder Chat-ID nicht konfiguriert. Bild nicht gesendet.")
+        return
+    api_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    try:
+        with open(file_path, 'rb') as img:
+            response = requests.post(api_url, data={'chat_id': chat_id, 'caption': caption},
+                                      files={'photo': img}, timeout=30)
+            response.raise_for_status()
+            logger.info("Telegram-Bild erfolgreich gesendet.")
+    except FileNotFoundError:
+        logger.error(f"Bild nicht gefunden: {file_path}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Fehler beim Senden des Bildes: {e}")
+
+
 def send_message(bot_token: str, chat_id: str, message: str):
     """Sendet eine Textnachricht an einen Telegram-Chat (MarkdownV2, escaped)."""
     if not bot_token or not chat_id:

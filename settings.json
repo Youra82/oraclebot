@@ -80,6 +80,7 @@
         "live_trading_enabled": false
     },
     "notification_settings": {
-        "telegram_enabled": true
+        "telegram_enabled": true,
+        "telegram_send_chart": true
     }
 }
