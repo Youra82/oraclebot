@@ -151,14 +151,101 @@ Zone kostete an der Klassengrenze echtes Signal, statt es abzubilden.
 
 ### 3. Modell-Architektur (`transformer.py`)
 
-- **Pro Timeframe ein Encoder** (`TimeframeEncoder`): BERT-artiges CLS-Token + Standard-Transformer-Encoder, fasst die gesamte Fenster-Sequenz eines Timeframes in einen Kontextvektor zusammen.
-- **Multi-Timeframe-Attention-Fusion** (`TimeframeFusion`): behandelt jeden Timeframe-Kontext als "Token" und fusioniert sie per Attention — die Attention-Gewichte des CLS-Tokens sind direkt interpretierbar als "welcher Timeframe war gerade wichtig" (im Live-Output sichtbar).
-- **Stufenweiser Decoder** (`StepwiseDecoder`): sagt die 8 Ziele sequentiell voraus, jeder Schritt bekommt den fusionierten Kontext plus die Embeddings aller vorherigen Schritte — Reihenfolge: `trend → range → close_position → upper_wick → lower_wick → gap_yn → inside_outside_day → high_first`.
-- **Beam Search** (`predict_beam`): sucht bei der Inferenz über alle 8 Schritte gleichzeitig nach der wahrscheinlichsten Gesamtsequenz (Standard: `beam_width=5`), nicht nur pro Schritt greedy.
+Drei separate Bausteine mit unterschiedlicher Tiefe — kein einheitlicher "ein Transformer
+macht alles". `d_model=256`, `nhead=8` (8×32-dim Heads), `dim_feedforward=1024` (Standard:
+das Übliche 4×d_model-Verhältnis), `dropout=0.1`, Standard-PyTorch **Post-LN**
+(`norm_first=False`, wie im Original-Paper Vaswani et al. 2017 — nicht Pre-LN wie bei GPT-2+),
+ReLU-Aktivierung (PyTorch-Default).
 
-Direkte kontinuierliche Feature-Projektion (`nn.Linear`, wie bei einem Vision Transformer)
-statt Diskretisierung über den alten K-Means-Tokenizer — zwei leicht unterschiedliche
-RSI-Werte im selben Cluster hätten sonst Information verloren.
+#### 3a. Pro-Timeframe-Encoder (`TimeframeEncoder`) — 6× unabhängige Instanzen
+
+```
+  Feature-Fenster (seq_len_tf, 19)              z.B. 15m: 500 Kerzen x 19 Features
+            │
+            ▼
+  nn.Linear(19 → 256)                           kontinuierliche Projektion, KEINE
+            │                                   Diskretisierung (anders als der
+            ▼                                   verworfene K-Means-Tokenizer)
+  [CLS] + Feature-Sequenz  (seq_len_tf+1, 256)   gelerntes CLS-Token vorangestellt (BERT-Stil)
+            │
+            ▼
+  + sinusförmige Positional Encoding             fest, nicht gelernt (Vaswani et al.),
+            │                                    kein RoPE/ALiBi
+            ▼
+  ┌────────────────────────────────────────┐
+  │  nn.TransformerEncoderLayer  × 4        │  Post-LN, pro Schicht:
+  │                                         │
+  │   x ──► Multi-Head Self-Attention ──►   │   8 Heads x 32 dim
+  │           Add & LayerNorm ──►           │
+  │           Feed-Forward 256→1024→256 ──► │   ReLU dazwischen
+  │           Add & LayerNorm               │
+  └────────────────────────────────────────┘
+            │
+            ▼
+  CLS-Token-Zustand herausgreifen  (1, 256)      = Kontextvektor DIESES Timeframes
+```
+
+Läuft **6× komplett unabhängig** (eigene Gewichte je Timeframe: 1M/1w/1d/4h/1h/15m, kein
+Weight-Sharing) — jede Zeitebene hat andere Dynamik, ein 15m-Encoder soll nicht dieselben
+Muster suchen wie ein 1M-Encoder.
+
+#### 3b. Multi-Timeframe-Fusion (`TimeframeFusion`) — genau 1×, nicht gestapelt
+
+```
+  6 Kontextvektoren (1M,1w,1d,4h,1h,15m)   je (1, 256)
+            │
+            ▼
+  + gelernte Timeframe-Embeddings           Segment-Embedding-artig: "das hier ist
+    (1 pro Timeframe, 256-dim)              der 1d-Kontext", "das hier ist 15m", ...
+            │
+            ▼
+  [neues CLS] + 6 Timeframe-Tokens  (7, 256)
+            │
+            ▼
+  1x nn.MultiheadAttention (Self-Attention, nhead=8)     -- NUR EINE Schicht, nicht gestapelt
+            │
+            ▼
+  Add & LayerNorm (nur auf das CLS-Token)
+            │
+            ▼
+  Fusionierter Kontext (1, 256)  +  Attention-Gewichte des CLS auf jeden Timeframe
+                                     (= exakt die "Timeframe-Gewichte" im Live-Output)
+```
+
+#### 3c. Stufenweiser Decoder (`StepwiseDecoder`) — kein "echter" Transformer-Decoder
+
+Wichtige Klarstellung: **keine** maskierte Self-Attention wie bei GPT. Acht sequentielle,
+unabhängige MLP-Köpfe, Konditionierung auf vorherige Schritte rein **additiv** über
+Klassen-Embeddings — kein Attention-Mechanismus im Decoder selbst:
+
+```
+  Fusionierter Kontext (1, 256)
+       │
+       ▼
+  ┌─ Schritt 1: trend ────────────────────┐
+  │  Linear(256→256) → ReLU → Dropout     │
+  │       → Linear(256→2)  [Logits]       │
+  │  gewählte Klasse → Embedding(256) ────┼──┐
+  └────────────────────────────────────────┘  │  additiv zum Kontext
+       Kontext + Klassen-Embedding  ◄──────────┘
+       │
+       ▼
+  ┌─ Schritt 2: range ────────────────────┐   eigener Kopf, gleiche Struktur,
+  │  ... (Kardinalität 4 statt 2)         │   sieht bereits die trend-Entscheidung
+  └────────────────────────────────────────┘
+       │
+       ▼
+      ... close_position → upper_wick → lower_wick →
+          gap_yn → inside_outside_day → high_first
+       │
+       ▼
+  8 Klassen-Vorhersagen, jede kennt alle vorherigen Schritte
+```
+
+Beim Training: Teacher Forcing (die echte Klasse wird als "gewählt" durchgereicht). Bei der
+Inferenz: **Beam Search** (`predict_beam`, `beam_width=5`) sucht über alle 8 Schritte
+gleichzeitig nach der wahrscheinlichsten Gesamtsequenz, statt pro Schritt gierig die
+Einzel-Top-1-Klasse zu nehmen.
 
 ### 4. Hybrid-Ansatz: Transformer vs. RandomForest
 
