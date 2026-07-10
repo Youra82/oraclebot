@@ -25,6 +25,7 @@ from oraclebot.model.transformer import MarketTransformer
 from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
 from oraclebot.utils.data_fetch import fetch_ohlcv
+from oraclebot.utils.telegram import send_message
 
 LABELS_BY_TARGET = {
     'trend': TREND_LABELS, 'range': RANGE_LABELS, 'close_position': CLOSE_POS_LABELS,
@@ -58,6 +59,54 @@ def load_settings(path: str) -> dict:
         return json.load(f)
 
 
+def required_fetch_limit(tf: str, window: int, feature_kwargs: dict) -> int:
+    """Wie viele Kerzen fuer `tf` mindestens geholt werden muessen: das Modell-Fenster
+    (`window`) plus das Warmup, das compute_features() fuer Indikatoren mit langem Anlauf
+    braucht (v.a. EMA-50/MACD-Slow+Signal), plus etwas Sicherheitsmarge.
+
+    Live-Inferenz braucht NICHT dieselbe Datenmenge wie das Training (history_days) --
+    Rolling-Indikatoren und das Sliding-Feature-Fenster sind lokal, unabhaengig von der
+    Gesamthistorie. Der alte Code fetchte pro Timeframe `history_days`-skaliert (bei 15m mit
+    history_days=1000 z.B. ~96000 Kerzen unkached), was bei Bitgets ~100-Kerzen-Chunk-Limit
+    viele Minuten pro Lauf gekostet hat -- unpraktikabel fuer taeglichen Cron-Betrieb auf
+    einem Rechner ohne nennenswerte Ressourcen (2026-07-10).
+    """
+    warmup = max(feature_kwargs.get('atr_window', 14), feature_kwargs.get('ema_window', 50),
+                 feature_kwargs.get('volume_window', 20), feature_kwargs.get('velocity_window', 10),
+                 feature_kwargs.get('rsi_window', 14),
+                 feature_kwargs.get('macd_slow', 26) + feature_kwargs.get('macd_signal_window', 9)) + 1
+    return window + warmup + 20
+
+
+def load_secrets(path: str) -> dict:
+    """Laedt secret.json, falls vorhanden -- sonst leeres dict (Telegram-Versand wird dann
+    stillschweigend uebersprungen, siehe telegram.send_message()). Kein Fehler, damit das
+    Script auch ohne konfigurierten Telegram-Bot laeuft (z.B. beim ersten lokalen Test)."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def format_telegram_message(symbol: str, target_date, prediction: dict, coords: dict, signal: dict) -> str:
+    trend_label = 'LONG (bullisch)' if prediction['trend'] == 1 else 'SHORT (baerisch)'
+    lines = [
+        f"OracleBot Prognose -- {symbol}",
+        f"Fuer Kerze: {target_date.date()}",
+        "",
+        f"Trend: {trend_label} (Konfidenz {signal['confidence']:.1%})",
+        f"Erwartete Spanne: {coords['low']:.2f} - {coords['high']:.2f}",
+        f"Body: {coords['body_bottom']:.2f} - {coords['body_top']:.2f}",
+    ]
+    if signal['direction'] is None:
+        lines.append(f"\nKein Handelssignal ({signal['reason']}).")
+    else:
+        lines.append(f"\nSignal: {signal['direction'].upper()}")
+        lines.append(f"Entry: {signal['entry']:.2f}")
+        lines.append(f"SL: {signal['stop_loss']:.2f}  TP: {signal['take_profit']:.2f}")
+    return "\n".join(lines)
+
+
 if __name__ == '__main__':
     settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
     settings = load_settings(settings_path)
@@ -69,7 +118,6 @@ if __name__ == '__main__':
     timeframes = model_cfg['timeframes']
     window_sizes = ds_cfg['window_sizes']
     feature_kwargs_by_tf = ds_cfg.get('feature_settings_by_timeframe', {})
-    history_days = train_cfg['history_days']
 
     torch.set_num_threads(train_cfg.get('num_threads', 4))
 
@@ -80,7 +128,8 @@ if __name__ == '__main__':
     logger.info(f"Lade frische Marktdaten fuer {symbol} (kein Cache -- soll der aktuelle Stand sein)...")
     ohlcv_by_timeframe = {}
     for tf in timeframes:
-        limit = max(50, int(history_days * 24 * 60 / TIMEFRAME_MINUTES[tf]))
+        feature_kwargs = {**ds_cfg['feature_settings'], **feature_kwargs_by_tf.get(tf, {})}
+        limit = required_fetch_limit(tf, window_sizes[tf], feature_kwargs)
         df = fetch_ohlcv(symbol, tf, limit=limit + 1)  # +1 Puffer, falls die letzte Kerze noch laeuft und gedroppt wird
         df = _drop_incomplete_last_candle(df, tf)
         ohlcv_by_timeframe[tf] = df
@@ -181,3 +230,14 @@ if __name__ == '__main__':
                         "(nur Signal-Berechnung, kein Exchange-Anschluss). Es wird KEIN echter Trade platziert.")
     else:
         logger.info("\n(Dry-Run: live_trading_enabled=false in settings.json -- es wird kein echter Trade platziert.)")
+
+    # Telegram-Benachrichtigung ist bewusst UNABHAENGIG von live_trading_enabled: die Prognose
+    # soll auch dann ankommen, wenn live_trading_enabled=false ist (reiner Beobachtungsmodus).
+    notif_cfg = settings.get('notification_settings', {})
+    if notif_cfg.get('telegram_enabled', False):
+        secret_path = os.path.join(os.path.dirname(__file__), '..', 'secret.json')
+        telegram_cfg = load_secrets(secret_path).get('telegram', {})
+        message = format_telegram_message(symbol, target_date, prediction, coords, signal)
+        send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
+    else:
+        logger.info("(notification_settings.telegram_enabled=false -- keine Telegram-Nachricht gesendet.)")

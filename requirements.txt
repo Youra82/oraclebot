@@ -2,6 +2,9 @@
 # Exchange
 ccxt==4.3.5
 
+# Telegram-Benachrichtigungen
+requests
+
 # Data
 numpy
 pandas==2.1.3

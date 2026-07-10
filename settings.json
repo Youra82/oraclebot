@@ -78,5 +78,8 @@
         "risk_reward": 1.5,
         "risk_per_trade_pct": 1.0,
         "live_trading_enabled": false
+    },
+    "notification_settings": {
+        "telegram_enabled": true
     }
 }
