@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 .pytest_cache/
 secret.json
+logs/
+*.lock
 
 # Generierte Charts -- koennen gross werden, jederzeit neu erzeugbar
 artifacts/charts/
