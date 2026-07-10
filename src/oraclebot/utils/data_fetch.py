@@ -40,7 +40,23 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
     all_ohlcv = []
     max_iterations = limit  # Backstop, falls die Boerse pro Call nur 1 Kerze liefert
     for _ in range(max_iterations):
-        chunk = exchange.fetch_ohlcv(symbol, timeframe, since, chunk_limit)
+        # Retry statt sofortigem Abbruch bei leerer/fehlgeschlagener Antwort: bei sehr grob
+        # aufgeloesten Timeframes (v.a. 1M, wo Bitget pro Call nur chunk_limit=2 Kerzen liefert)
+        # braucht ein voller Fetch ~20 sequentielle Requests -- ein einzelner transienter
+        # Netzwerk-/Rate-Limit-Hickser wuerde sonst die gesamte Historie vorzeitig abschneiden
+        # (beobachtet 2026-07-10: VPS-Lauf brach nach 3 von 43 benoetigten 1M-Kerzen ab, obwohl
+        # ein identischer Fetch von einem anderen Rechner aus vollstaendig durchlief).
+        chunk = None
+        for attempt in range(3):
+            try:
+                chunk = exchange.fetch_ohlcv(symbol, timeframe, since, chunk_limit)
+            except Exception as e:
+                logger.warning(f"{symbol} {timeframe}: Fetch-Fehler (Versuch {attempt + 1}/3): {e}")
+                chunk = None
+            if chunk:
+                break
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
         if not chunk:
             break
         if all_ohlcv:
