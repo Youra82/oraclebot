@@ -77,7 +77,14 @@ def required_fetch_limit(tf: str, window: int, feature_kwargs: dict) -> int:
                  feature_kwargs.get('volume_window', 20), feature_kwargs.get('velocity_window', 10),
                  feature_kwargs.get('rsi_window', 14),
                  feature_kwargs.get('macd_slow', 26) + feature_kwargs.get('macd_signal_window', 9)) + 1
-    return window + warmup + 20
+    # Kleine, aber ausreichende Marge (frueher +20, pauschal): bei sehr grob aufgeloesten
+    # Timeframes wie 1M kostet jede zusaetzlich angeforderte Kerze ~0.5 zusaetzliche
+    # paginierte API-Anfragen (Bitget liefert dort nur 2 Kerzen/Call, siehe data_fetch.py) --
+    # eine kleinere Marge reduziert unnoetige Round-Trips und schiebt den `since`-Startpunkt
+    # naeher an "jetzt" heran (2026-07-10: VPS-Lauf brach bei 1M wiederholt deterministisch
+    # um denselben fruehen Zeitpunkt ab, obwohl derselbe Fetch von einem anderen Rechner aus
+    # sauber durchlief -- weniger angeforderte Historie reduziert die Angriffsflaeche dafuer).
+    return window + warmup + 5
 
 
 def load_secrets(path: str) -> dict:

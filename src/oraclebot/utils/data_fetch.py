@@ -51,13 +51,19 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
             try:
                 chunk = exchange.fetch_ohlcv(symbol, timeframe, since, chunk_limit)
             except Exception as e:
-                logger.warning(f"{symbol} {timeframe}: Fetch-Fehler (Versuch {attempt + 1}/3): {e}")
+                logger.warning(f"{symbol} {timeframe}: Fetch-Fehler bei since={since} "
+                               f"(Versuch {attempt + 1}/3): {type(e).__name__}: {e}")
                 chunk = None
             if chunk:
                 break
+            if not chunk:
+                logger.warning(f"{symbol} {timeframe}: Leere Antwort bei since={since} "
+                               f"(Versuch {attempt + 1}/3, bisher {len(all_ohlcv)}/{limit} Kerzen).")
             if attempt < 2:
                 time.sleep(1.0 * (attempt + 1))
         if not chunk:
+            logger.warning(f"{symbol} {timeframe}: Fetch abgebrochen nach {len(all_ohlcv)}/{limit} "
+                           f"Kerzen (since={since} liefert weiterhin nichts nach 3 Versuchen).")
             break
         if all_ohlcv:
             chunk = [c for c in chunk if c[0] > all_ohlcv[-1][0]]
