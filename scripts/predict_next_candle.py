@@ -2,6 +2,7 @@
 # Live-Inferenz: laedt frische Marktdaten, wendet den trainierten Checkpoint an,
 # gibt die kategoriale Vorhersage + rekonstruierte Preis-Koordinaten fuer die naechste
 # noch nicht abgeschlossene Tageskerze aus.
+import argparse
 import json
 import logging
 import os
@@ -109,6 +110,14 @@ def format_telegram_message(symbol: str, target_date, prediction: dict, coords: 
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--preview', action='store_true',
+                         help="Behandelt die noch laufende Tageskerze als abgeschlossen und "
+                              "prognostiziert bereits jetzt die danach folgende Kerze -- nur zur "
+                              "Vorschau, NICHT die reguaere taegliche Prognose (die laueft per "
+                              "Cronjob kurz nach 00:00 UTC auf echten abgeschlossenen Kerzen).")
+    args = parser.parse_args()
+
     settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
     settings = load_settings(settings_path)
     ds_cfg = settings['dataset_settings']
@@ -132,9 +141,17 @@ if __name__ == '__main__':
         feature_kwargs = {**ds_cfg['feature_settings'], **feature_kwargs_by_tf.get(tf, {})}
         limit = required_fetch_limit(tf, window_sizes[tf], feature_kwargs)
         df = fetch_ohlcv(symbol, tf, limit=limit + 1)  # +1 Puffer, falls die letzte Kerze noch laeuft und gedroppt wird
-        df = _drop_incomplete_last_candle(df, tf)
+        if not (args.preview and tf == ds_cfg['reference_timeframe']):
+            df = _drop_incomplete_last_candle(df, tf)
         ohlcv_by_timeframe[tf] = df
         logger.info(f"  {tf}: {len(df)} Kerzen, letzte abgeschlossene: {df.index[-1]}")
+
+    if args.preview:
+        logger.warning("\n--preview: die noch laufende Tageskerze wird mit ihrem AKTUELLEN (noch "
+                        "nicht finalen) Stand als abgeschlossen behandelt. Das ist eine Vorschau, "
+                        "keine echte Prognose -- Open/High/Low/Close koennen sich bis Handelsschluss "
+                        "noch aendern. Die echte taegliche Prognose kommt per Cronjob kurz nach "
+                        "00:00 UTC auf Basis der tatsaechlich abgeschlossenen Kerze.")
 
     daily_df = ohlcv_by_timeframe[ds_cfg['reference_timeframe']]
     last_closed_date = daily_df.index[-1]
