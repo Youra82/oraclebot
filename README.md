@@ -594,12 +594,19 @@ crontab -e
 ```
 
 ```cron
-TZ=UTC
-5 0 * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot.lock /bin/sh -c "cd /pfad/zu/oraclebot && .venv/bin/python3 scripts/predict_next_candle.py >> /pfad/zu/oraclebot/logs/cron.log 2>&1"
+# oraclebot -> offset 60s
+5 0 * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot.lock /bin/sh -c "sleep 60; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/predict_next_candle.py >> /pfad/zu/oraclebot/logs/cron.log 2>&1"
 ```
 
-`TZ=UTC` stellt sicher, dass die Zeitangabe UTC-basiert ausgewertet wird, unabhängig von der
-Server-Lokalzeit. `flock` verhindert überlappende Läufe.
+Läuft nur **einmal täglich** (nicht wie ltbbot/mbot alle 15 Min — die prüfen kontinuierlich auf
+Signale, oraclebot prognostiziert genau eine Kerze pro Tag; ein häufigerer Lauf würde bis zum
+nächsten Kerzenwechsel dieselbe Prognose wiederholt per Telegram senden). `5 0 * * *` setzt
+voraus, dass der Server in **UTC** läuft (bei den meisten frischen Ubuntu/Debian-VPS
+Standard — mit `timedatectl` prüfen; falls nicht UTC, die Uhrzeit auf das lokale Äquivalent von
+00:00 UTC umrechnen). `sleep 60` staffelt den Start etwas ab (z.B. gegenüber anderen
+Cronjobs auf demselben Server). `flock` verhindert überlappende Läufe. `OMP_NUM_THREADS=1` /
+`MKL_NUM_THREADS=1` begrenzen das numpy/sklearn-Threading (relevant für die
+RandomForest-Inferenz) — sinnvoll auf einem ressourcenschwachen Rechner.
 
 #### 3. Update auf neue Version
 
