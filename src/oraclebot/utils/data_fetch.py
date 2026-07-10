@@ -12,20 +12,25 @@ logger = logging.getLogger(__name__)
 TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
 
 
-def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str = 'bitget') -> pd.DataFrame:
+def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str = 'bitget',
+                 since_ms: int = None) -> pd.DataFrame:
     """Laedt die letzten `limit` Kerzen fuer `symbol`/`timeframe` ueber die oeffentliche ccxt-API.
 
     Paginiert vorwaerts ab einem berechneten Startzeitpunkt (statt rueckwaerts anhand
     einer angenommenen Chunk-Groesse) -- Bitget liefert pro `since`-Request oft deutlich
     weniger Kerzen als angefragt (~90-100 statt 1000), was bei rueckwaerts-Paginierung
     stillschweigend Luecken in der Historie erzeugen wuerde.
+
+    `since_ms`: optionaler expliziter Startzeitpunkt (ms seit Epoch), z.B. fuer inkrementelle
+    Updates ab dem letzten Cache-Stand (siehe fetch_ohlcv_incremental()) -- ueberschreibt die
+    sonst aus `limit` berechnete Startzeit.
     """
     exchange = getattr(ccxt, exchange_id)({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
     exchange.load_markets()
 
     timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
     now_ms = exchange.milliseconds()
-    since = now_ms - limit * timeframe_ms
+    since = since_ms if since_ms is not None else now_ms - limit * timeframe_ms
 
     # Bitget-Eigenheiten bei paginierten `since`-Requests:
     # 1) Requests, deren impliziter Zeitraum (limit * timeframe_ms) 90 Tage ueberschreitet,
@@ -46,24 +51,32 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
         # Netzwerk-/Rate-Limit-Hickser wuerde sonst die gesamte Historie vorzeitig abschneiden
         # (beobachtet 2026-07-10: VPS-Lauf brach nach 3 von 43 benoetigten 1M-Kerzen ab, obwohl
         # ein identischer Fetch von einem anderen Rechner aus vollstaendig durchlief).
+        # Nahe an "jetzt" ist eine leere Antwort der NORMALE Endzustand (die aktuell laufende
+        # Kerze existiert schlicht noch nicht als abfragbare since-Grenze) -- kein Fehler, kein
+        # Retry noetig. Nur bei since deutlich in der Vergangenheit (dort SOLLTE Historie
+        # existieren) ist eine leere Antwort verdaechtig genug fuer Retries + Log-Warnungen.
+        near_now = (now_ms - since) < (timeframe_ms * 2)
+        attempts = 1 if near_now else 3
         chunk = None
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
                 chunk = exchange.fetch_ohlcv(symbol, timeframe, since, chunk_limit)
             except Exception as e:
-                logger.warning(f"{symbol} {timeframe}: Fetch-Fehler bei since={since} "
-                               f"(Versuch {attempt + 1}/3): {type(e).__name__}: {e}")
+                if not near_now:
+                    logger.warning(f"{symbol} {timeframe}: Fetch-Fehler bei since={since} "
+                                   f"(Versuch {attempt + 1}/{attempts}): {type(e).__name__}: {e}")
                 chunk = None
             if chunk:
                 break
-            if not chunk:
+            if not chunk and not near_now:
                 logger.warning(f"{symbol} {timeframe}: Leere Antwort bei since={since} "
-                               f"(Versuch {attempt + 1}/3, bisher {len(all_ohlcv)}/{limit} Kerzen).")
-            if attempt < 2:
+                               f"(Versuch {attempt + 1}/{attempts}, bisher {len(all_ohlcv)}/{limit} Kerzen).")
+            if attempt < attempts - 1:
                 time.sleep(1.0 * (attempt + 1))
         if not chunk:
-            logger.warning(f"{symbol} {timeframe}: Fetch abgebrochen nach {len(all_ohlcv)}/{limit} "
-                           f"Kerzen (since={since} liefert weiterhin nichts nach 3 Versuchen).")
+            if not near_now:
+                logger.warning(f"{symbol} {timeframe}: Fetch abgebrochen nach {len(all_ohlcv)}/{limit} "
+                               f"Kerzen (since={since} liefert weiterhin nichts nach {attempts} Versuchen).")
             break
         if all_ohlcv:
             chunk = [c for c in chunk if c[0] > all_ohlcv[-1][0]]
@@ -93,6 +106,54 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
     unexpected_gaps = gaps[gaps > expected * 1.5]
     if len(unexpected_gaps) > 0:
         logger.warning(f"{symbol} {timeframe}: {len(unexpected_gaps)} unerwartete Luecke(n) in der Historie entdeckt.")
+
+    return df
+
+
+def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache_path: str) -> pd.DataFrame:
+    """Live-Cache fuer predict_next_candle.py: erster Lauf holt die volle benoetigte Historie
+    und speichert sie unter `cache_path` (gitignored, siehe artifacts/datasets/ohlcv_*.pkl in
+    .gitignore); jeder weitere Lauf haengt nur die Kerzen seit dem letzten Cache-Stand an.
+
+    Bei 1M/1w bedeutet das an den meisten Tagen NULL neue API-Calls (die Kerze hat sich seit
+    gestern nicht geaendert) statt einer vollen ~15-20-Request-Paginierung -- genau der Teil,
+    der auf einem VPS wiederholt deterministisch fehlschlug (2026-07-10). Die letzte gecachte
+    Kerze wird IMMER neu abgefragt (nicht ab danach), falls sie beim letzten Lauf noch nicht
+    abgeschlossen war und sich der Wert seitdem noch aendern konnte.
+    """
+    cached = pd.read_pickle(cache_path) if os.path.exists(cache_path) else pd.DataFrame()
+
+    if len(cached) == 0:
+        logger.info(f"{symbol} {timeframe}: kein Live-Cache vorhanden, hole volle Historie ({min_candles} Kerzen)...")
+        df = fetch_ohlcv(symbol, timeframe, limit=min_candles)
+    else:
+        exchange = ccxt.bitget({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
+        timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
+        since_ms = int(cached.index[-1].value // 1_000_000)  # letzte gecachte Kerze neu bestaetigen
+        fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50), since_ms=since_ms)
+        if len(fresh) == 0:
+            logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte nichts, nutze reinen Cache-Stand.")
+            df = cached
+        else:
+            df = pd.concat([cached.iloc[:-1], fresh]) if len(cached) > 1 else fresh
+            df = df[~df.index.duplicated(keep='last')].sort_index()
+        logger.info(f"{symbol} {timeframe}: {len(fresh) if len(fresh) else 0} neue/aktualisierte Kerze(n) "
+                    f"seit Cache-Stand ({len(cached)} -> {len(df)}).")
+
+    # Cache nicht unbegrenzt wachsen lassen -- genug Puffer fuer kuenftige Fenster-Vergroesserungen.
+    if len(df) > min_candles * 3:
+        df = df.iloc[-min_candles * 3:]
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    df.to_pickle(cache_path)
+
+    if len(df) < min_candles:
+        logger.warning(f"{symbol} {timeframe}: Cache hat nur {len(df)}/{min_candles} Kerzen. "
+                        f"Hole fehlende Historie zusaetzlich nach...")
+        backfill = fetch_ohlcv(symbol, timeframe, limit=min_candles)
+        if len(backfill) > len(df):
+            df = backfill
+            df.to_pickle(cache_path)
 
     return df
 

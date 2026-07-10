@@ -26,7 +26,7 @@ from oraclebot.model.transformer import MarketTransformer
 from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
 from oraclebot.utils.chart_png import plot_prediction_chart
-from oraclebot.utils.data_fetch import fetch_ohlcv
+from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message, send_photo
 
 LABELS_BY_TARGET = {
@@ -142,12 +142,14 @@ if __name__ == '__main__':
     checkpoint_path = os.path.join(artifacts_dir, 'market_transformer_best.pt')
     scaler_path = os.path.join(artifacts_dir, 'scaler_full.pkl')
 
-    logger.info(f"Lade frische Marktdaten fuer {symbol} (kein Cache -- soll der aktuelle Stand sein)...")
+    logger.info(f"Lade Marktdaten fuer {symbol} (inkrementeller Live-Cache -- volle Historie nur beim ersten Lauf)...")
+    safe_symbol = symbol.replace('/', '_').replace(':', '_')
     ohlcv_by_timeframe = {}
     for tf in timeframes:
         feature_kwargs = {**ds_cfg['feature_settings'], **feature_kwargs_by_tf.get(tf, {})}
         limit = required_fetch_limit(tf, window_sizes[tf], feature_kwargs)
-        df = fetch_ohlcv(symbol, tf, limit=limit + 1)  # +1 Puffer, falls die letzte Kerze noch laeuft und gedroppt wird
+        cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{tf}.pkl")
+        df = fetch_ohlcv_incremental(symbol, tf, min_candles=limit + 1, cache_path=cache_path)
         if not (args.preview and tf == ds_cfg['reference_timeframe']):
             df = _drop_incomplete_last_candle(df, tf)
         ohlcv_by_timeframe[tf] = df
