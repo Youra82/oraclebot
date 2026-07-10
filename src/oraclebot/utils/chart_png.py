@@ -12,7 +12,6 @@ from oraclebot.model.reconstruct import reconstruct_simple_candle
 
 UP_COLOR = '#26a69a'
 DOWN_COLOR = '#ef5350'
-PRED_COLOR = '#42a5f5'
 
 
 def _draw_candle(ax, x: int, o: float, h: float, l: float, c: float, width: float = 0.6,
@@ -36,9 +35,14 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     for i, (_, row) in enumerate(recent.iterrows()):
         _draw_candle(ax, i, row['open'], row['high'], row['low'], row['close'])
 
+    # Farbe folgt der tatsaechlich vorhergesagten Richtung (wie bei den echten Kerzen) --
+    # NICHT ein fixes PRED_COLOR: das zeigte vorher unabhaengig von trend immer dasselbe
+    # blasse Blau an, was bei einer SHORT-Prognose faelschlich neutral/gruenlich statt
+    # erkennbar rot wirkte (Nutzer-Meldung 2026-07-10). Gestrichelter Rand + Transparenz
+    # bleiben das Merkmal "das ist eine Prognose, keine echte Kerze".
     pred_x = len(recent)
     _draw_candle(ax, pred_x, pred['open'], pred['high'], pred['low'], pred['close'],
-                 color=PRED_COLOR, alpha=0.5, linestyle='dashed')
+                 alpha=0.6, linestyle='dashed')
 
     tick_positions = list(range(0, len(recent), max(1, len(recent) // 8))) + [pred_x]
     tick_labels = [recent.index[i].strftime('%m-%d') for i in tick_positions if i < len(recent)] + [
