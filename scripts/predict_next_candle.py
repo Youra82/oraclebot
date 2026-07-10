@@ -243,9 +243,21 @@ if __name__ == '__main__':
             entry=signal['entry'], stop_loss=signal['stop_loss'])
         logger.info(f"  Positionsgroesse bei 1000 USDT Beispiel-Balance: {size:.6f} BTC")
 
+    secret_path = os.path.join(os.path.dirname(__file__), '..', 'secret.json')
+    secrets = load_secrets(secret_path)
+    telegram_cfg = secrets.get('telegram', {})
+
     if strat_cfg.get('live_trading_enabled', False):
-        logger.warning("\nlive_trading_enabled=true, aber Order-Platzierung ist noch nicht implementiert "
-                        "(nur Signal-Berechnung, kein Exchange-Anschluss). Es wird KEIN echter Trade platziert.")
+        oraclebot_accounts = secrets.get('oraclebot', [])
+        if not oraclebot_accounts or not oraclebot_accounts[0].get('apiKey'):
+            logger.error("\nlive_trading_enabled=true, aber keine 'oraclebot'-API-Keys in secret.json "
+                         "gefunden (siehe secret.json.example). Es wird KEIN echter Trade platziert.")
+        else:
+            from oraclebot.strategy.live_trade import execute_live_trade
+            from oraclebot.utils.exchange import Exchange
+            exchange = Exchange(oraclebot_accounts[0])
+            result = execute_live_trade(exchange, signal, symbol, strat_cfg, telegram_cfg)
+            logger.info(f"\nLive-Trading-Ergebnis: {result}")
     else:
         logger.info("\n(Dry-Run: live_trading_enabled=false in settings.json -- es wird kein echter Trade platziert.)")
 
@@ -253,8 +265,6 @@ if __name__ == '__main__':
     # soll auch dann ankommen, wenn live_trading_enabled=false ist (reiner Beobachtungsmodus).
     notif_cfg = settings.get('notification_settings', {})
     if notif_cfg.get('telegram_enabled', False):
-        secret_path = os.path.join(os.path.dirname(__file__), '..', 'secret.json')
-        telegram_cfg = load_secrets(secret_path).get('telegram', {})
         message = format_telegram_message(symbol, target_date, prediction, coords, signal)
 
         if notif_cfg.get('telegram_send_chart', True):

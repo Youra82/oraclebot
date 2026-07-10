@@ -8,8 +8,10 @@ statt Wörtern.
 
 > **Disclaimer:** Diese Software ist experimentell und dient ausschließlich Forschungszwecken.
 > Der Handel mit Kryptowährungen birgt erhebliche finanzielle Risiken. Nutzung auf eigene Gefahr.
-> Live-Order-Platzierung ist **nicht implementiert** — der Bot berechnet aktuell nur Signale
-> und benachrichtigt per Telegram, platziert aber keine echten Trades (siehe [Wichtige Regeln](#wichtige-regeln--bekannte-einschränkungen)).
+> Live-Order-Platzierung ist implementiert und über `strategy_settings.live_trading_enabled`
+> in `settings.json` steuerbar (siehe [Live-Trading](#live-trading-echte-order-platzierung)) —
+> **standardmäßig `false`**. Erst auf `true` stellen, wenn du das Verhalten verstanden und
+> mit echtem, für dich verkraftbarem Kapital getestet hast.
 
 ---
 
@@ -341,6 +343,86 @@ wie 0.55–0.65 getestet werden (siehe `backtest_signal.py --mode 3`).
 
 ---
 
+## Live-Trading (echte Order-Platzierung)
+
+`predict_next_candle.py` platziert bei `strategy_settings.live_trading_enabled: true` echte
+Orders auf Bitget — separat von der Telegram-Benachrichtigung, die immer unabhängig davon
+läuft. Implementiert in `src/oraclebot/utils/exchange.py` (authentifizierter ccxt-Wrapper,
+gleiches Muster wie mbot/dbot/ltbbot) und `src/oraclebot/strategy/live_trade.py`
+(Order-Orchestrierung).
+
+```
+Jeder Cronjob-Lauf (00:05 UTC), wenn live_trading_enabled=true:
+
+  Offene Position fuer das Symbol vorhanden?
+    ├── Ja  → Kein neuer Entry (kein Stacking). Nur loggen.
+    └── Nein →
+           Kein Handelssignal (min_trend_confidence nicht erreicht)?
+             ├── Ja → nichts tun
+             └── Nein →
+                    Echtes Guthaben abrufen (fetch_balance_usdt)
+                    Hebel + Margin-Modus setzen (leverage/margin_mode aus settings.json)
+                    Positionsgroesse = risikobasiert (compute_position_size), gedeckelt
+                        durch verfuegbare Margin (Balance x Hebel, 1% Puffer)
+                    Boersen-Minimum + Mindest-Notional (5 USDT) pruefen
+                        │
+                        ▼
+                    1) Market-Order Entry
+                        │  (tatsaechlicher Fuellpreis/-menge aus der Order-Antwort,
+                        │   nicht der urspruengliche Signal-Preis)
+                        ▼
+                    2) SL als reduceOnly-Trigger-Order
+                        │  Fehler? → Position SOFORT per Market Order schliessen
+                        │            + Telegram-Alarm ("ACHTUNG oraclebot: ...")
+                        │            -- niemals ungeschuetzt offen lassen
+                        ▼
+                    3) TP als reduceOnly-Trigger-Order
+                        │  Fehler? → nur loggen, Position bleibt durch SL geschuetzt
+                        ▼
+                    Telegram-Bestaetigung mit Entry/SL/TP/Menge/Hebel
+```
+
+**Sicherheitsprinzipien** (getestet in `tests/test_live_trade.py`, 10 gemockte Szenarien):
+- Reihenfolge ist immer Entry → SL → TP, nie umgekehrt (reduceOnly-Trigger brauchen eine
+  tatsächlich bestehende Position).
+- SL-Platzierung schlägt fehl → Position wird sofort geschlossen, nicht "hoffentlich später
+  nachgetragen". Eine ungeschützte Position ist der teuerste mögliche Fehlerzustand.
+- SL/TP werden am **tatsächlichen Fill-Preis** verankert (nicht am ursprünglichen
+  Signal-Preis), mit denselben Preis-Abständen, die `compute_trade_signal()` berechnet hat.
+- Margin-Cap verhindert, dass die risikobasierte Positionsgröße bei sehr enger SL-Distanz die
+  verfügbare Margin übersteigt (1% Sicherheitspuffer).
+- Bereits offene Position → kein neuer Entry, kein Stacking.
+
+### Einrichtung
+
+```bash
+# 1) Neue, dedizierte Bitget-API-Keys erstellen (NICHT dieselben wie bei anderen Bots --
+#    getrennte Keys vermeiden, dass sich zwei Bots auf demselben Symbol/Account ins Gehege kommen)
+cp secret.json.example secret.json
+nano secret.json
+```
+
+```json
+{
+    "oraclebot": [
+        { "name": "Main-Account", "apiKey": "...", "secret": "...", "password": "..." }
+    ],
+    "telegram": { "bot_token": "...", "chat_id": "..." }
+}
+```
+
+```bash
+# 2) Hebel/Margin-Modus in settings.json pruefen (Standard: 5x isolated)
+# 3) Erst manuell testen (--preview, live_trading_enabled noch false), dann umstellen:
+nano settings.json   # "live_trading_enabled": true
+```
+
+Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_candle.py` bei
+`live_trading_enabled=true` kontrolliert mit einer klaren Fehlermeldung ab (kein Crash, kein
+stiller Fehlschlag).
+
+---
+
 ## Konfiguration (`settings.json`)
 
 ```json
@@ -370,6 +452,8 @@ wie 0.55–0.65 getestet werden (siehe `backtest_signal.py --mode 3`).
         "sl_range_fraction": 0.5,
         "risk_reward": 1.5,
         "risk_per_trade_pct": 1.0,
+        "leverage": 5,
+        "margin_mode": "isolated",
         "live_trading_enabled": false
     },
     "notification_settings": {
@@ -386,7 +470,8 @@ wie 0.55–0.65 getestet werden (siehe `backtest_signal.py --mode 3`).
 | `training_settings.history_days` | 1000 = Obergrenze von Bitgets 1h/15m-Datentiefe (~1040 Tage). Mehr History half deutlich (Trend-Accuracy 53.8%→60.6%) — aber erst, nachdem der Hybrid-Ansatz das Transformer-Kollaps-Problem behoben hatte. |
 | `training_settings.boosted_targets` / `diversity_weight` | Transformer-seitige Gegenmaßnahmen gegen Kollaps (stärkere Kopf-Initialisierung + Vorhersage-Streuungs-Regularisierer) — nur noch für `trend`/`gap_yn`/`high_first` relevant, da die anderen Ziele vom RandomForest kommen. |
 | `strategy_settings.min_trend_confidence` | Siehe Hinweis oben — aktuell quasi wirkungslos bei binärem `trend`. |
-| `strategy_settings.live_trading_enabled` | Schaltet **nur** eine Warnung in `predict_next_candle.py` — Order-Platzierung ist nicht implementiert, unabhängig vom Wert. |
+| `strategy_settings.leverage` / `margin_mode` | Nur relevant bei `live_trading_enabled=true` — wird vor jedem Entry via `exchange.set_leverage`/`set_margin_mode` gesetzt. |
+| `strategy_settings.live_trading_enabled` | Schaltet echte Order-Platzierung auf Bitget ein/aus (siehe [Live-Trading](#live-trading-echte-order-platzierung)). Standard: `false`. |
 | `notification_settings.telegram_enabled` | Unabhängig von `live_trading_enabled` — Prognosen kommen auch bei deaktiviertem Live-Trading per Telegram an. |
 | `notification_settings.telegram_send_chart` | `true` = Chart-PNG mit Bildunterschrift; `false` = nur Text (`send_message`). |
 
@@ -575,9 +660,10 @@ und berechnet ein Wilson-Score-Konfidenzintervall der Kollaps-Rate.
 PYTHONPATH=src python -m pytest tests/
 ```
 
-69 Tests über Feature-Engineering (inkl. Kausalitäts-Regressionstest), Zielvariablen,
-Rekonstruktion, Signal-Logik, Transformer-Architektur, RandomForest-Ensemble,
-Telegram-Versand. Vor jedem Live-Deployment ausführen.
+79 Tests über Feature-Engineering (inkl. Kausalitäts-Regressionstest), Zielvariablen,
+Rekonstruktion, Signal-Logik, Transformer-Architektur, RandomForest-Ensemble, Telegram-Versand
+und Live-Trading (10 gemockte Order-Platzierungs-Szenarien, inkl. SL-Fehler-Notausstieg und
+Margin-Cap — keine echten API-Calls). Vor jedem Live-Deployment ausführen.
 
 #### Bot aktualisieren (VPS)
 
@@ -593,9 +679,13 @@ Telegram-Versand. Vor jedem Live-Deployment ausführen.
 - `artifacts/datasets/market_transformer_best.pt`, `scaler_full.pkl`, `tree_ensemble.pkl`
   sind **bewusst git-getrackt** (anders als sonst übliche Binärdateien) — sie sind die
   einzige Voraussetzung für Inferenz auf einem schwächeren/GPU-losen Rechner.
-- **Live-Order-Platzierung ist nicht implementiert.** `live_trading_enabled=true` löst nur
-  eine Warnung aus, es wird nie eine echte Order gesendet. Der Bot ist aktuell ein
-  Prognose-/Signal-System, kein automatisierter Trader.
+- **Live-Order-Platzierung ist implementiert**, aber `live_trading_enabled` ist standardmäßig
+  `false`. Auf `true` stellen bedeutet echtes Geld auf echten Bitget-Orders — siehe
+  [Live-Trading](#live-trading-echte-order-platzierung) für die Sicherheitsmechanismen (SL-Fehler
+  → sofortiger Notausstieg, Margin-Cap, kein Stacking) bevor du das aktivierst.
+- Getrennte API-Keys für oraclebot empfohlen (`secret.json` → `"oraclebot"`-Array) — nicht
+  dieselben Keys wie andere Bots auf demselben Symbol wiederverwenden, sonst können sich
+  Positionen/Margin zweier unabhängiger Bots überschneiden.
 - `min_trend_confidence` ist bei binärem `trend`-Ziel aktuell praktisch wirkungslos (siehe
   [Handelssignal](#handelssignal--position-sizing-signalpy)) — nicht mit einem echten Filter verwechseln.
 - Aktuell **BTC-only** (`dataset_settings.symbols`). Multi-Symbol-Code existiert, ist aber
