@@ -154,7 +154,7 @@ class StepwiseDecoder(nn.Module):
     dann Volatilitaet, dann Kerzenform).
     """
 
-    def __init__(self, d_model: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, dropout: float = 0.1, boosted_targets: list = None):
         super().__init__()
         self.step_names = list(TARGET_NAMES)
         self.cardinalities = [TARGET_CARDINALITIES[name] for name in self.step_names]
@@ -164,11 +164,16 @@ class StepwiseDecoder(nn.Module):
             nn.Sequential(nn.Linear(d_model, d_model), nn.ReLU(), nn.Dropout(dropout), nn.Linear(d_model, card))
             for card in self.cardinalities
         ])
-        # trend (Schritt 0) ist der einzige Decoder-Schritt ganz ohne Vorwissen aus vorherigen
-        # Schritten -- am anfaelligsten dafuer, frueh nur den konstanten Trainings-Klassenprior
-        # zu lernen (mehrfach beobachtet, 2026-07-09/10). Staerkere Init der letzten Schicht
-        # macht die Anfangs-Logits weniger uniform, aehnlich zur Fusion-Attention oben.
-        nn.init.xavier_uniform_(self.heads[0][-1].weight, gain=2.0)
+        # trend (Schritt 0, kein Vorwissen aus vorherigen Schritten) war der anfaelligste Fall,
+        # aber close_position/upper_wick/lower_wick zeigten im OOS-Test dieselbe Schwaeche
+        # (36-48% statt deutlich ueber Zufall) -- vermutlich derselbe Kollaps-Mechanismus, nur
+        # schwaecher ausgeprraegt. Gleiche Behandlung (staerkere Init) fuer alle konfigurierten
+        # Ziele statt nur trend. Welche Ziele geboostet werden, kommt aus settings.json
+        # (training_settings.boosted_targets) und wird 1:1 auch fuer die LR-Gruppen in
+        # train_transformer.py verwendet -- eine Quelle der Wahrheit statt zwei Listen.
+        for name in (boosted_targets or ['trend']):
+            idx = self.step_names.index(name)
+            nn.init.xavier_uniform_(self.heads[idx][-1].weight, gain=2.0)
 
     def forward(self, fused_context: torch.Tensor, targets: dict = None) -> dict:
         """
@@ -194,16 +199,17 @@ class MarketTransformer(nn.Module):
 
     def __init__(self, n_features: int, timeframes: list, window_sizes: dict,
                  d_model: int = 256, nhead: int = 8, num_encoder_layers: int = 4,
-                 dim_feedforward: int = 1024, dropout: float = 0.1):
+                 dim_feedforward: int = 1024, dropout: float = 0.1, boosted_targets: list = None):
         super().__init__()
         self.timeframes = list(timeframes)
+        self.boosted_targets = list(boosted_targets or ['trend'])
         self.timeframe_encoders = nn.ModuleDict({
             tf: TimeframeEncoder(n_features, d_model, nhead, num_encoder_layers, dim_feedforward,
                                   dropout, max_len=window_sizes[tf])
             for tf in self.timeframes
         })
         self.fusion = TimeframeFusion(d_model, nhead, dropout, max_timeframes=max(16, len(self.timeframes)))
-        self.decoder = StepwiseDecoder(d_model, dropout)
+        self.decoder = StepwiseDecoder(d_model, dropout, boosted_targets=self.boosted_targets)
 
     def _fuse(self, features_by_timeframe: dict):
         contexts = [self.timeframe_encoders[tf](features_by_timeframe[tf]) for tf in self.timeframes]
@@ -216,26 +222,29 @@ class MarketTransformer(nn.Module):
         logits = self.decoder(fused, targets)
         return logits, timeframe_weights
 
-    def compute_loss(self, features_by_timeframe: dict, targets: dict, trend_diversity_weight: float = 0.0):
-        """`trend_diversity_weight`: belohnt hohe STANDARDABWEICHUNG der Einzelvorhersagen
+    def compute_loss(self, features_by_timeframe: dict, targets: dict, diversity_weights: dict = None):
+        """`diversity_weights`: {target_name: weight} -- belohnt hohe STANDARDABWEICHUNG der
 
-        P(bullish) ueber das Batch -- nicht die Entropie des Batch-DURCHSCHNITTS (erste Version
-        dieses Regularisierers, verworfen 2026-07-10: ein Modell, das JEDES Beispiel gleich
-        knapp Richtung bullish kippt -- z.B. durchgehend P(bullish)=0.565 -- hat eine fast
-        maximale Durchschnitts-Entropie [0.435,0.565] UND trotzdem eine komplett kollabierte
-        argmax-Entscheidung, weil 0.565 > 0.435 fuer jedes einzelne Beispiel gilt. Durchschnitts-
-        Ausgeglichenheit und echte Beispiel-zu-Beispiel-Differenzierung sind zwei verschiedene
-        Dinge -- der urspruengliche Regularisierer bestrafte die falsche Groesse. Eine niedrige
-        Streuung (alle Vorhersagen nah beieinander, wie im beobachteten Fall) wird jetzt direkt
-        bestraft, unabhaengig davon wie ausgeglichen der Durchschnitt zufaellig aussieht.
+        Einzelvorhersagen ueber das Batch, pro Klasse summiert (verallgemeinert auf beliebige
+        Kardinalitaet: bei binaeren Zielen wie trend ist das aequivalent zu std(P(Klasse 1))).
+        NICHT die Entropie des Batch-DURCHSCHNITTS (erste Version dieses Regularisierers,
+        verworfen 2026-07-10: ein Modell, das JEDES Beispiel gleich knapp in eine Richtung
+        kippt -- z.B. durchgehend P(bullish)=0.565 -- hat eine fast maximale Durchschnitts-
+        Entropie UND trotzdem eine komplett kollabierte argmax-Entscheidung, weil 0.565 > 0.435
+        fuer jedes einzelne Beispiel gilt. Durchschnitts-Ausgeglichenheit und echte Beispiel-zu-
+        Beispiel-Differenzierung sind zwei verschiedene Dinge. Eine niedrige Streuung (alle
+        Vorhersagen nah beieinander) wird jetzt direkt bestraft, unabhaengig davon wie
+        ausgeglichen der Durchschnitt zufaellig aussieht.
         """
         logits, timeframe_weights = self.forward(features_by_timeframe, targets=targets)
         losses = {name: F.cross_entropy(logits[name], targets[name]) for name in logits}
         total = sum(losses.values())
-        if trend_diversity_weight > 0:
-            bullish_probs = F.softmax(logits['trend'], dim=-1)[:, 1]
-            spread = torch.std(bullish_probs, unbiased=False)
-            total = total - trend_diversity_weight * spread
+        for name, weight in (diversity_weights or {}).items():
+            if weight <= 0:
+                continue
+            probs = F.softmax(logits[name], dim=-1)
+            spread = torch.std(probs, dim=0, unbiased=False).sum()
+            total = total - weight * spread
         return total, losses, timeframe_weights
 
     @torch.no_grad()

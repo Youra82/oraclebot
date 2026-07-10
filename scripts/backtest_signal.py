@@ -191,8 +191,15 @@ def run_mode_2(settings: dict, start_capital: float):
     return rows
 
 
-def run_mode_3(settings: dict, start_capital: float, max_dd_limit: float):
-    """Automatische Optimierung: Grid-Search ueber min_trend_confidence / risk_reward."""
+def run_mode_3(settings: dict, start_capital: float, max_dd_limit: float, min_trades: int = 15):
+    """Automatische Optimierung: Grid-Search ueber min_trend_confidence / risk_reward.
+
+    `min_trades`: Kombinationen mit weniger Trades werden nicht als "bestes Ergebnis"
+    zugelassen, auch wenn ihr PnL/MaxDD gut aussieht -- sonst gewinnt zuverlaessig die
+    Kombination, die praktisch nie handelt (0 Trades = 0% Verlust = "bestes" Ergebnis rein
+    rechnerisch, aber nutzlos). Lehre aus pbot (2026-07-10): dessen Optuna-Optimierung prunt
+    Trials mit zu wenigen Trades aus genau diesem Grund (dort min_trades=15, hier uebernommen).
+    """
     print(f"{CYAN}--- OracleBot Signal-Backtest (Automatische Parameter-Optimierung) ---{NC}")
     device = torch.device('cpu')
     model, scaler = load_model_and_scaler(settings, device)
@@ -230,19 +237,21 @@ def run_mode_3(settings: dict, start_capital: float, max_dd_limit: float):
         label = f"conf={min_conf:.2f} rr={rr:.1f}"
         rows.append(result_row(label, result))
 
-        if result['max_drawdown_pct'] <= max_dd_limit:
+        if result['max_drawdown_pct'] <= max_dd_limit and result['trades_count'] >= min_trades:
             if best is None or result['total_pnl_pct'] > best[1]['total_pnl_pct']:
                 best = (strategy_cfg, result)
 
     rows.sort(key=lambda r: r['PnL %'], reverse=True)
-    print_results_table(rows, f"OracleBot Parameter-Optimierung (Max-DD-Limit: {max_dd_limit}%)")
+    print_results_table(rows, f"OracleBot Parameter-Optimierung (Max-DD-Limit: {max_dd_limit}%, Min-Trades: {min_trades})")
 
     if best:
         cfg, result = best
-        print(f"\n{GREEN}Bestes Ergebnis innerhalb Max-DD-Limit:{NC} min_trend_confidence={cfg['min_trend_confidence']}, "
-              f"risk_reward={cfg['risk_reward']} -> PnL={result['total_pnl_pct']:.2f}%, MaxDD={result['max_drawdown_pct']:.2f}%")
+        print(f"\n{GREEN}Bestes Ergebnis innerhalb Max-DD-Limit und Min-Trades:{NC} min_trend_confidence={cfg['min_trend_confidence']}, "
+              f"risk_reward={cfg['risk_reward']} -> PnL={result['total_pnl_pct']:.2f}%, MaxDD={result['max_drawdown_pct']:.2f}%, "
+              f"Trades={result['trades_count']}")
     else:
-        print(f"\n{YELLOW}Keine Kombination blieb innerhalb des Max-DD-Limits ({max_dd_limit}%).{NC}")
+        print(f"\n{YELLOW}Keine Kombination blieb innerhalb von Max-DD-Limit und Min-Trades "
+              f"(Max-DD<={max_dd_limit}%, Trades>={min_trades}).{NC}")
     return rows
 
 
@@ -251,6 +260,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=int, choices=[1, 2, 3], default=1)
     parser.add_argument('--capital', type=float, default=100.0)
     parser.add_argument('--max-dd', type=float, default=30.0, help='Nur fuer Modus 3')
+    parser.add_argument('--min-trades', type=int, default=15, help='Nur fuer Modus 3')
     args = parser.parse_args()
 
     settings = load_settings()
@@ -259,4 +269,4 @@ if __name__ == '__main__':
     elif args.mode == 2:
         run_mode_2(settings, args.capital)
     elif args.mode == 3:
-        run_mode_3(settings, args.capital, args.max_dd)
+        run_mode_3(settings, args.capital, args.max_dd, args.min_trades)

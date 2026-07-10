@@ -241,10 +241,17 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_ds, batch_size=min(batch_size, len(val_ds)), shuffle=False, collate_fn=collate_fn)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Welche Decoder-Koepfe eine eigene (hoehere) LR + staerkere Init + Diversitaets-
+    # Regularisierung bekommen. trend war der urspruengliche Fall (kein Vorwissen aus
+    # vorherigen Schritten, am anfaelligsten fuer Kollaps auf die Trainings-Mehrheitsklasse,
+    # 2026-07-09); close_position/upper_wick/lower_wick zeigten im OOS-Test dieselbe Schwaeche
+    # (36-48% statt deutlich ueber Zufall), vermutlich derselbe Mechanismus, nur schwaecher.
+    boosted_targets = train_cfg.get('boosted_targets', ['trend'])
     model = MarketTransformer(
         n_features=n_features, timeframes=timeframes, window_sizes=ds_cfg['window_sizes'],
         d_model=d_model, nhead=model_cfg['nhead'], num_encoder_layers=model_cfg['num_encoder_layers'],
         dim_feedforward=model_cfg['dim_feedforward'], dropout=model_cfg['dropout'],
+        boosted_targets=boosted_targets,
     ).to(device)
     # Eigene (hoehere) Lernrate fuer die TimeframeFusion-Attention: mit einer einzigen
     # gemeinsamen LR blieb sie ueber viele Epochen bei fast uniformen Gewichten haengen
@@ -254,38 +261,34 @@ if __name__ == '__main__':
     # Boost reicht die normale Basis-LR nicht, um die Fusion aus ihrem Init-nahen Fixpunkt
     # herauszubewegen -- der Repraesentations-Kollaps vom 2026-07-09-Checkpoint (Trend-
     # Vorhersage praktisch konstant = Trainings-Klassenpriorisierung, egal welches Beispiel).
-    # Nach dem Fusion-Fix (siehe unten) spezialisiert die Attention jetzt wirklich, aber der
-    # trend-Decoder-Kopf (erster von 8 sequenziellen Decoder-Schritten, TARGET_NAMES[0], hat
-    # als einziger keinerlei Vorwissen aus vorherigen Schritten) blieb trotzdem bei der reinen
-    # Trainings-Mehrheitsklasse haengen (Accuracy = exakt der Anteil der haeufigsten Klasse in
-    # den Validierungsdaten, beobachtet 2026-07-09). Gleiches Prinzip wie bei der Fusion: eigene
-    # hoehere LR nur fuer diesen Kopf, um ihn aus seinem eigenen Bias-dominierten Fixpunkt zu bewegen.
+    # Dieselbe eigene, hoehere LR bekommen auch alle konfigurierten `boosted_targets`-Koepfe.
     base_lr = train_cfg['learning_rate']
     fusion_lr = base_lr * train_cfg.get('fusion_lr_multiplier', 1.0)
     fusion_param_ids = {id(p) for p in model.fusion.parameters()}
-    trend_head_param_ids = {id(p) for p in model.decoder.heads[0].parameters()}
-    boosted_ids = fusion_param_ids | trend_head_param_ids
+    boosted_head_params = {name: list(model.decoder.heads[model.decoder.step_names.index(name)].parameters())
+                            for name in boosted_targets}
+    boosted_ids = fusion_param_ids | {id(p) for params in boosted_head_params.values() for p in params}
     other_params = [p for p in model.parameters() if id(p) not in boosted_ids]
-    optimizer = torch.optim.Adam([
-        {'params': other_params, 'lr': base_lr},
-        {'params': model.fusion.parameters(), 'lr': fusion_lr},
-        {'params': model.decoder.heads[0].parameters(), 'lr': fusion_lr},
-    ])
+    param_groups = [{'params': other_params, 'lr': base_lr}, {'params': model.fusion.parameters(), 'lr': fusion_lr}]
+    param_groups += [{'params': params, 'lr': fusion_lr} for params in boosted_head_params.values()]
+    optimizer = torch.optim.Adam(param_groups)
     logger.info(f"Optimizer: Basis-LR={base_lr}, Fusion-Attention-LR={fusion_lr}, "
-                f"Trend-Kopf-LR={fusion_lr} ({train_cfg.get('fusion_lr_multiplier', 1.0)}x)")
+                f"geboostete Koepfe ({', '.join(boosted_targets)})-LR={fusion_lr} "
+                f"({train_cfg.get('fusion_lr_multiplier', 1.0)}x)")
 
-    # LR-Warmup NUR fuer die Basis-Parameter: fuer die geboosteten Gruppen (Fusion, Trend-Kopf)
-    # drosselt der Warmup genau die ersten Epochen, in denen sie den Symmetriebruch aus ihrem
-    # uniformen/Bias-Fixpunkt heraus schaffen muessen (im 5-Epochen-Diagnoselauf mit sofort
+    # LR-Warmup NUR fuer die Basis-Parameter: fuer die geboosteten Gruppen (Fusion, geboostete
+    # Koepfe) drosselt der Warmup genau die ersten Epochen, in denen sie den Symmetriebruch aus
+    # ihrem uniformen/Bias-Fixpunkt heraus schaffen muessen (im 5-Epochen-Diagnoselauf mit sofort
     # voller 10x-LR trat die Spezialisierung schon ab Epoche 4 auf; im vollen Lauf MIT Warmup
     # fuer beide Gruppen blieb sie trotz 19 Epochen komplett kollabiert). Geboostete Gruppen
     # bekommen daher von Anfang an die volle LR, nur die Basis-Parameter werden sanft hochgefahren.
     warmup_epochs = max(1, train_cfg.get('lr_warmup_epochs', 0))
     warmup_lambda = (lambda epoch: min(1.0, (epoch + 1) / warmup_epochs)) if train_cfg.get('lr_warmup_epochs', 0) else (lambda epoch: 1.0)
     constant_lambda = lambda epoch: 1.0
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [warmup_lambda, constant_lambda, constant_lambda])
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [warmup_lambda] + [constant_lambda] * (len(param_groups) - 1))
     grad_clip_norm = train_cfg.get('grad_clip_norm', 0.0)
-    trend_diversity_weight = train_cfg.get('trend_diversity_weight', 0.0)
+    diversity_weight = train_cfg.get('diversity_weight', 0.0)
+    diversity_weights = {name: diversity_weight for name in boosted_targets} if diversity_weight > 0 else {}
 
     checkpoint_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'market_transformer.pt')
     best_checkpoint_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'market_transformer_best.pt')
@@ -306,7 +309,7 @@ if __name__ == '__main__':
             features = {tf: t.to(device) for tf, t in features.items()}
             targets = {name: t.to(device) for name, t in targets.items()}
             optimizer.zero_grad()
-            total_loss, _, _ = model.compute_loss(features, targets, trend_diversity_weight=trend_diversity_weight)
+            total_loss, _, _ = model.compute_loss(features, targets, diversity_weights=diversity_weights)
             total_loss.backward()
             if grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
