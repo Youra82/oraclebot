@@ -40,30 +40,53 @@ def _compute_swings(df: pd.DataFrame, swing_window: int = 5) -> tuple:
 
     Wird sowohl fuer den Marktstruktur-Score als auch fuer Support/Resistance-Distanzen
     genutzt, damit die Swing-Erkennung nicht doppelt berechnet wird.
+
+    Lookahead-Fix (2026-07-10): Ob Kerze i ein lokales Extremum ist, laesst sich erst
+    beurteilen, wenn die folgenden `swing_window` Kerzen abgeschlossen sind -- man braucht
+    die Zukunft, um zu wissen, dass i ein Hoch/Tief war. Das centered rolling() liefert also
+    is_swing_high/-low technisch korrekt fuer Kerze i, aber real-time waere dieses Wissen erst
+    `swing_window` Kerzen spaeter verfuegbar. Ohne Korrektur wuerden die letzten paar Kerzen vor
+    einem Vorhersage-Cutoff (build_training_examples() in dataset.py) bereits Informationen ueber
+    noch gar nicht abgeschlossene, teils in der Zukunft liegende Kerzen enthalten -- ein echtes
+    Lookahead-Leck, das genau die juengsten und damit wichtigsten Feature-Zeilen betraf.
+    Fix: jeder Swing-Punkt behaelt seinen echten Zeitstempel (fuer Geometrie/Trendlinien in
+    _chart_technical_features), bekommt aber zusaetzlich `confirmed_at` = Zeitstempel
+    `swing_window` Kerzen spaeter. Aufrufer duerfen einen Swing-Punkt nur verwenden, wenn
+    `confirmed_at <= ts` (nicht der eigene Zeitstempel) -- das entspricht exakt dem Wissensstand
+    eines Live-Bots zum Zeitpunkt ts.
     """
     high, low = df['high'], df['low']
     is_swing_high = high == high.rolling(2 * swing_window + 1, center=True).max()
     is_swing_low = low == low.rolling(2 * swing_window + 1, center=True).min()
-    return high[is_swing_high], low[is_swing_low]
+    confirmed_at_full = pd.Series(df.index, index=df.index).shift(-swing_window)
+
+    swing_highs = pd.DataFrame({
+        'price': high[is_swing_high], 'confirmed_at': confirmed_at_full[is_swing_high],
+    }).dropna()
+    swing_lows = pd.DataFrame({
+        'price': low[is_swing_low], 'confirmed_at': confirmed_at_full[is_swing_low],
+    }).dropna()
+    return swing_highs, swing_lows
 
 
-def _market_structure_score(swing_highs: pd.Series, swing_lows: pd.Series, index: pd.Index,
+def _market_structure_score(swing_highs: pd.DataFrame, swing_lows: pd.DataFrame, index: pd.Index,
                              lookback: int = 20) -> pd.Series:
     """Swing-High/Low-basierter Trendstruktur-Score in {-2,-1,0,+1,+2}.
 
     Vergleich der letzten zwei Swing-Highs/-Lows in `lookback` Kerzen ergibt HH/HL bzw. LH/LL.
+    Filterung ueber `confirmed_at <= ts` (nicht den eigenen Zeitstempel), siehe _compute_swings().
     """
     scores = pd.Series(0, index=index, dtype=float)
 
     for i, ts in enumerate(index):
         window_start = index[max(0, i - lookback)]
-        recent_highs = swing_highs[(swing_highs.index >= window_start) & (swing_highs.index <= ts)]
-        recent_lows = swing_lows[(swing_lows.index >= window_start) & (swing_lows.index <= ts)]
+        recent_highs = swing_highs[(swing_highs['confirmed_at'] >= window_start) & (swing_highs['confirmed_at'] <= ts)]
+        recent_lows = swing_lows[(swing_lows['confirmed_at'] >= window_start) & (swing_lows['confirmed_at'] <= ts)]
 
-        higher_high = len(recent_highs) >= 2 and recent_highs.iloc[-1] > recent_highs.iloc[-2]
-        higher_low = len(recent_lows) >= 2 and recent_lows.iloc[-1] > recent_lows.iloc[-2]
-        lower_high = len(recent_highs) >= 2 and recent_highs.iloc[-1] < recent_highs.iloc[-2]
-        lower_low = len(recent_lows) >= 2 and recent_lows.iloc[-1] < recent_lows.iloc[-2]
+        higher_high = len(recent_highs) >= 2 and recent_highs['price'].iloc[-1] > recent_highs['price'].iloc[-2]
+        higher_low = len(recent_lows) >= 2 and recent_lows['price'].iloc[-1] > recent_lows['price'].iloc[-2]
+        lower_high = len(recent_highs) >= 2 and recent_highs['price'].iloc[-1] < recent_highs['price'].iloc[-2]
+        lower_low = len(recent_lows) >= 2 and recent_lows['price'].iloc[-1] < recent_lows['price'].iloc[-2]
 
         if higher_high and higher_low:
             scores.iloc[i] = 2
@@ -105,7 +128,7 @@ def _cluster_levels(prices: np.ndarray, tolerance: float) -> list:
     return [float(np.mean(c)) for c in clusters]
 
 
-def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.Series, swing_lows: pd.Series,
+def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.DataFrame, swing_lows: pd.DataFrame,
                                atr: pd.Series, lookback: int = 20, zone_tolerance_atr: float = 0.5,
                                no_level_atr: float = 3.0) -> tuple:
     """Berechnet zwei klassische chart-technische Konzepte aus Swing-Highs/-Lows:
@@ -128,24 +151,28 @@ def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.Series, swing_lo
 
     for i, ts in enumerate(df.index):
         window_start = df.index[max(0, i - lookback)]
-        recent_highs = swing_highs[(swing_highs.index >= window_start) & (swing_highs.index <= ts)]
-        recent_lows = swing_lows[(swing_lows.index >= window_start) & (swing_lows.index <= ts)]
+        # Filterung ueber confirmed_at (nicht den eigenen Swing-Zeitstempel), siehe _compute_swings().
+        recent_highs = swing_highs[(swing_highs['confirmed_at'] >= window_start) & (swing_highs['confirmed_at'] <= ts)]
+        recent_lows = swing_lows[(swing_lows['confirmed_at'] >= window_start) & (swing_lows['confirmed_at'] <= ts)]
         c = close.iloc[i]
         a = atr.iloc[i]
         tolerance = zone_tolerance_atr * a if pd.notna(a) and a > 0 else 0.0
 
         # 1) Zonen statt Einzelpunkte
-        resistance_zones = [z for z in _cluster_levels(recent_highs.values, tolerance) if z > c]
-        support_zones = [z for z in _cluster_levels(recent_lows.values, tolerance) if z < c]
+        resistance_zones = [z for z in _cluster_levels(recent_highs['price'].values, tolerance) if z > c]
+        support_zones = [z for z in _cluster_levels(recent_lows['price'].values, tolerance) if z < c]
         resistance.iloc[i] = (min(resistance_zones) - c) if resistance_zones else np.nan
         support.iloc[i] = (c - max(support_zones)) if support_zones else np.nan
 
         # 2) Lokaler Trendkanal aus Swing-Highs (oben) / Swing-Lows (unten)
+        # x-Koordinaten nutzen den ECHTEN Swing-Zeitstempel (recent_highs.index), nicht
+        # confirmed_at -- die Trendlinie muss geometrisch durch die tatsaechlichen Extrempunkte
+        # verlaufen, nur die Zulassung zum Zeitpunkt ts ist ueber confirmed_at gegated.
         if len(recent_highs) >= 2 and len(recent_lows) >= 2:
             x_highs = np.array([df.index.get_loc(t) for t in recent_highs.index], dtype=float)
             x_lows = np.array([df.index.get_loc(t) for t in recent_lows.index], dtype=float)
-            upper_slope, upper_intercept = np.polyfit(x_highs, recent_highs.values, 1)
-            lower_slope, lower_intercept = np.polyfit(x_lows, recent_lows.values, 1)
+            upper_slope, upper_intercept = np.polyfit(x_highs, recent_highs['price'].values, 1)
+            lower_slope, lower_intercept = np.polyfit(x_lows, recent_lows['price'].values, 1)
             upper_val = upper_slope * i + upper_intercept
             lower_val = lower_slope * i + lower_intercept
             channel_width = upper_val - lower_val

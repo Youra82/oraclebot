@@ -107,6 +107,28 @@ def test_channel_slope_is_positive_in_strong_uptrend():
     assert feats['channel_slope'].iloc[-20:].mean() > 0
 
 
+def test_swing_features_are_causal_no_lookahead():
+    """Feature-Werte an Kerze t duerfen sich nicht aendern, wenn zukuenftige Kerzen (> t)
+    aus dem DataFrame entfernt werden -- sonst haette die Berechnung an Kerze t Wissen ueber
+    noch nicht abgeschlossene Kerzen benutzt (siehe _compute_swings()-Fix vom 2026-07-10:
+    Swing-High/Low-Erkennung nutzt centered rolling() und muss ueber `confirmed_at` gegated
+    werden, sonst lecken resistance_distance/support_distance/channel_*/structure Zukunftsdaten).
+    """
+    df = make_ohlcv(n=200)
+    cutoff = 150
+    feats_full = compute_features(df)
+    feats_truncated = compute_features(df.iloc[:cutoff])
+
+    common_idx = feats_full.index.intersection(feats_truncated.index)
+    # Die letzten Kerzen vor dem Cutoff sind der kritische Fall: hier trat das Leck auf.
+    check_idx = common_idx[common_idx <= df.index[cutoff - 1]][-10:]
+    assert len(check_idx) > 0
+    for col in ['structure', 'resistance_distance', 'support_distance', 'channel_position', 'channel_slope']:
+        pd.testing.assert_series_equal(
+            feats_full.loc[check_idx, col], feats_truncated.loc[check_idx, col],
+            check_names=False, obj=col)
+
+
 def test_channel_position_exceeds_one_on_breakout_above_channel():
     idx = pd.date_range('2024-01-01', periods=61, freq='D', tz='UTC')
     t = np.arange(61)
