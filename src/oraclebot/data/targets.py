@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import ta
 
-TREND_LABELS = ['bearish', 'neutral', 'bullish']          # -1, 0, +1
+TREND_LABELS = ['bearish', 'bullish']                      # 0, 1 -- kein Neutral-Bucket mehr,
+# siehe compute_targets(): eine explizite Neutral-Zone hat in Tests (sklearn-Baselines auf
+# denselben Features, 2026-07-09) das lernbare Signal stark reduziert (2-Klassen-Vorsprung
+# ueber Zufalls-Baseline deutlich groesser als bei 3 Klassen mit Neutral-Zone).
 RANGE_LABELS = ['0-0.5atr', '0.5-1atr', '1-2atr', '>2atr']  # 0..3
 CLOSE_POS_LABELS = ['lower_third', 'middle_third', 'upper_third']  # 0..2
 WICK_LABELS = ['small', 'medium', 'large']                  # 0..2
@@ -58,7 +61,7 @@ def _compute_high_first(daily_df: pd.DataFrame, intraday_df: pd.DataFrame) -> pd
 
 
 def compute_targets(df: pd.DataFrame, intraday_df: pd.DataFrame, atr_window: int = 14,
-                     neutral_zone_atr: float = 0.15, gap_atr_threshold: float = 0.1) -> pd.DataFrame:
+                     gap_atr_threshold: float = 0.1) -> pd.DataFrame:
     """Berechnet die Zielvariablen fuer JEDE Kerze aus ihren eigenen OHLC-Werten.
 
     Wichtig: Diese Funktion beschreibt die Kerze bei Index i selbst (ihr realisiertes
@@ -72,7 +75,6 @@ def compute_targets(df: pd.DataFrame, intraday_df: pd.DataFrame, atr_window: int
             `high_first` zu bestimmen (welches Extrem innerhalb der Kerze zuerst erreicht wurde;
             aus der Kerze selbst nicht ablesbar).
         atr_window: Fenster fuer die ATR-Berechnung (muss zum Feature-ATR passen).
-        neutral_zone_atr: Trend gilt als 'neutral', wenn |Return| < neutral_zone_atr * ATR/Close.
         gap_atr_threshold: `gap_yn`=1 (Gap), wenn |Open_t - Close_t-1| > gap_atr_threshold * ATR.
 
     Returns:
@@ -90,11 +92,14 @@ def compute_targets(df: pd.DataFrame, intraday_df: pd.DataFrame, atr_window: int
 
     out = pd.DataFrame(index=df.index)
 
+    # Binaer (hoch/runter), KEINE Neutral-Zone mehr: ein sklearn-Baseline-Test (2026-07-09,
+    # gleiche Features) zeigte einen Vorsprung von +13.6pp (BTC) / +6pp (ETH, RandomForest)
+    # ueber Zufalls-Baseline bei binaerer Formulierung, gegenueber nur +4-7pp mit der alten
+    # 3-Klassen-Version mit Neutral-Zone -- die Zone hat an der Klassengrenze echtes Signal
+    # gekostet, statt es abzubilden.
     ret = df['close'].pct_change()
-    neutral_threshold = neutral_zone_atr * (atr / df['close'].replace(0, np.nan))
-    trend = pd.Series(1, index=df.index, dtype='Int64')  # neutral
-    trend[ret > neutral_threshold] = 2   # bullish
-    trend[ret < -neutral_threshold] = 0  # bearish
+    trend = pd.Series(0, index=df.index, dtype='Int64')  # bearish
+    trend[ret > 0] = 1  # bullish
     out['trend'] = trend
 
     out['range_atr_raw'] = hl_range / atr.replace(0, np.nan)

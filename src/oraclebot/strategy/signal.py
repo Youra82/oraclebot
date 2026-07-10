@@ -22,7 +22,7 @@ def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
         prev_close: Anker-Preis (letzter bekannter Schlusskurs, siehe reconstruct.py).
         atr: Average True Range der Referenz-Kerze (absoluter Preis, keine Ratio).
         min_trend_confidence: Kein Trade, wenn die Trend-Wahrscheinlichkeit darunter liegt
-            (Baseline bei 3 Klassen ist 33% -- ein sinnvoller Schwellwert liegt darueber).
+            (Baseline bei 2 Klassen ist 50% -- ein sinnvoller Schwellwert liegt darueber).
         sl_range_fraction: SL-Abstand = sl_range_fraction * range_atr_multiple * ATR.
             0.5 heisst: SL liegt bei der Haelfte der vom Modell erwarteten Tagesrange.
         risk_reward: TP-Abstand = risk_reward * SL-Abstand.
@@ -35,8 +35,6 @@ def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
     trend = prediction['trend']
     confidence = prediction['step_probabilities']['trend']
 
-    if trend == 1:
-        return {'direction': None, 'reason': 'neutral_trend', 'confidence': confidence}
     if confidence < min_trend_confidence:
         return {'direction': None, 'reason': 'low_confidence', 'confidence': confidence}
 
@@ -44,7 +42,7 @@ def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
     sl_distance = sl_range_fraction * range_atr_multiple * atr
     tp_distance = risk_reward * sl_distance
 
-    direction = 'long' if trend == 2 else 'short'
+    direction = 'long' if trend == 1 else 'short'
     entry = prev_close
     if direction == 'long':
         stop_loss = entry - sl_distance

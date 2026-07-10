@@ -285,6 +285,7 @@ if __name__ == '__main__':
     constant_lambda = lambda epoch: 1.0
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [warmup_lambda, constant_lambda, constant_lambda])
     grad_clip_norm = train_cfg.get('grad_clip_norm', 0.0)
+    trend_diversity_weight = train_cfg.get('trend_diversity_weight', 0.0)
 
     checkpoint_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'market_transformer.pt')
     best_checkpoint_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'market_transformer_best.pt')
@@ -305,7 +306,7 @@ if __name__ == '__main__':
             features = {tf: t.to(device) for tf, t in features.items()}
             targets = {name: t.to(device) for name, t in targets.items()}
             optimizer.zero_grad()
-            total_loss, _, _ = model.compute_loss(features, targets)
+            total_loss, _, _ = model.compute_loss(features, targets, trend_diversity_weight=trend_diversity_weight)
             total_loss.backward()
             if grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)

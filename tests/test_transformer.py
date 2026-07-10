@@ -68,6 +68,26 @@ def test_compute_loss_is_finite_and_positive():
     assert set(per_head_losses.keys()) == set(TARGET_NAMES)
 
 
+def test_trend_diversity_weight_changes_loss_but_not_per_head_losses():
+    """Der Diversitaets-Term wirkt nur auf `total`, nicht auf die einzelnen Zielgroessen-Losses
+
+    (die bleiben reines Cross-Entropy, unveraendert) -- und aendert `total` gegenueber
+    Gewicht=0 (bestaetigt, dass der Term ueberhaupt greift).
+    """
+    model = make_model()
+    features, targets = make_batch(batch_size=8)
+
+    torch.manual_seed(0)
+    total_plain, losses_plain, _ = model.compute_loss(features, targets, trend_diversity_weight=0.0)
+    torch.manual_seed(0)
+    total_diverse, losses_diverse, _ = model.compute_loss(features, targets, trend_diversity_weight=0.5)
+
+    assert torch.isfinite(total_diverse)
+    assert not torch.isclose(total_plain, total_diverse)
+    for name in TARGET_NAMES:
+        assert torch.isclose(losses_plain[name], losses_diverse[name])
+
+
 def test_training_step_reduces_loss_on_tiny_batch():
     torch.manual_seed(0)
     model = make_model()

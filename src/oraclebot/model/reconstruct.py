@@ -26,7 +26,7 @@ def reconstruct_candle(prev_close: float, atr: float, trend: int, range_cat: int
     Args:
         prev_close: Schlusskurs der letzten bekannten (Referenz-)Kerze -- Anker fuer Open.
         atr: Average True Range der letzten bekannten Kerze (absoluter Preis, keine Ratio).
-        trend: 0=bearish, 1=neutral, 2=bullish (siehe targets.TREND_LABELS).
+        trend: 0=bearish, 1=bullish (siehe targets.TREND_LABELS -- kein Neutral-Bucket mehr).
         range_cat, close_position_cat, upper_wick_cat, lower_wick_cat: Kategorie-Indizes
             wie von MarketTransformer.predict_beam() zurueckgegeben.
 
@@ -42,12 +42,10 @@ def reconstruct_candle(prev_close: float, atr: float, trend: int, range_cat: int
     lower_wick_ratio = WICK_BUCKET_VALUES[lower_wick_cat]
     body_ratio = max(0.0, 1.0 - upper_wick_ratio - lower_wick_ratio)
 
-    if trend == 2:    # bullish
+    if trend == 1:    # bullish
         close_price = open_price + body_ratio * range_price
-    elif trend == 0:  # bearish
+    else:             # bearish (trend == 0)
         close_price = open_price - body_ratio * range_price
-    else:             # neutral
-        close_price = open_price
 
     body_top = max(open_price, close_price)
     body_bottom = min(open_price, close_price)
@@ -68,4 +66,27 @@ def reconstruct_candle(prev_close: float, atr: float, trend: int, range_cat: int
         'upper_wick_size': high - body_top,
         'lower_wick_size': body_bottom - low,
         'close_position_consistent': implied_cp_cat == close_position_cat,
+    }
+
+
+def reconstruct_simple_candle(prev_close: float, atr: float, trend: int, range_cat: int) -> dict:
+    """Rekonstruiert eine Kerze NUR aus trend+range -- den beiden Targets mit tatsaechlich
+
+    validierter Vorhersagekraft (OOS-Tests 2026-07-09: range ~47-53% vs. 25% Baseline;
+    close_position/upper_wick/lower_wick dagegen kaum ueber Zufall, 31-47% bei
+    Mehrklassen-Baselines um 25-33%). Der volle `reconstruct_candle()` taeuscht durch die
+    Docht-/Close-Geometrie eine Praezision vor, die das Modell nicht hat -- `signal.py`
+    vermeidet das fuer SL/TP bereits bewusst (siehe Kommentar dort), diese Funktion zieht
+    dieselbe Konsequenz fuer die Chart-Darstellung: die gesamte vorhergesagte Bewegung wird
+    als Body gezeigt (Open=prev_close, Close=Open +/- range), ohne Docht -- ehrlich statt
+    fein-koernig falsch.
+    """
+    open_price = prev_close
+    range_price = RANGE_BUCKET_VALUES[range_cat] * atr
+    close_price = open_price + range_price if trend == 1 else open_price - range_price
+    return {
+        'open': open_price,
+        'close': close_price,
+        'high': max(open_price, close_price),
+        'low': min(open_price, close_price),
     }

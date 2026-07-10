@@ -9,21 +9,15 @@ def make_prediction(trend, range_cat=1, trend_confidence=0.6):
     }
 
 
-def test_neutral_trend_produces_no_trade():
-    signal = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0)
-    assert signal['direction'] is None
-    assert signal['reason'] == 'neutral_trend'
-
-
 def test_low_confidence_produces_no_trade():
-    signal = compute_trade_signal(make_prediction(trend=2, trend_confidence=0.3), prev_close=100.0, atr=2.0,
+    signal = compute_trade_signal(make_prediction(trend=1, trend_confidence=0.3), prev_close=100.0, atr=2.0,
                                    min_trend_confidence=0.4)
     assert signal['direction'] is None
     assert signal['reason'] == 'low_confidence'
 
 
 def test_bullish_trend_produces_long_signal_with_correct_ordering():
-    signal = compute_trade_signal(make_prediction(trend=2), prev_close=100.0, atr=2.0)
+    signal = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0)
     assert signal['direction'] == 'long'
     assert signal['stop_loss'] < signal['entry'] < signal['take_profit']
 
@@ -35,13 +29,13 @@ def test_bearish_trend_produces_short_signal_with_correct_ordering():
 
 
 def test_risk_reward_ratio_is_respected():
-    signal = compute_trade_signal(make_prediction(trend=2), prev_close=100.0, atr=2.0, risk_reward=3.0)
+    signal = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0, risk_reward=3.0)
     assert abs(signal['tp_distance'] - 3.0 * signal['sl_distance']) < 1e-9
 
 
 def test_sl_distance_scales_with_predicted_range():
-    small_range = compute_trade_signal(make_prediction(trend=2, range_cat=0), prev_close=100.0, atr=2.0)
-    large_range = compute_trade_signal(make_prediction(trend=2, range_cat=3), prev_close=100.0, atr=2.0)
+    small_range = compute_trade_signal(make_prediction(trend=1, range_cat=0), prev_close=100.0, atr=2.0)
+    large_range = compute_trade_signal(make_prediction(trend=1, range_cat=3), prev_close=100.0, atr=2.0)
     assert small_range['sl_distance'] < large_range['sl_distance']
 
 

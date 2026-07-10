@@ -1,6 +1,6 @@
 {
     "dataset_settings": {
-        "symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"],
+        "symbols": ["BTC/USDT:USDT"],
         "reference_timeframe": "1d",
         "window_sizes": {
             "1M": 12,
@@ -40,8 +40,7 @@
             }
         },
         "target_settings": {
-            "atr_window": 14,
-            "neutral_zone_atr": 0.15
+            "atr_window": 14
         }
     },
     "tokenizer_settings": {
@@ -58,18 +57,19 @@
     },
     "training_settings": {
         "history_days": 730,
-        "batch_size": 8,
+        "batch_size": 16,
         "learning_rate": 0.0001,
         "epochs": 50,
         "val_split": 0.30,
         "num_threads": 12,
-        "max_attention_memory_bytes": 1073741824,
+        "max_attention_memory_bytes": 3221225472,
         "checkpoint_every_epochs": 5,
         "early_stopping_patience": 12,
         "early_stopping_min_delta": 0.0,
         "lr_warmup_epochs": 3,
         "grad_clip_norm": 1.0,
-        "fusion_lr_multiplier": 10.0
+        "fusion_lr_multiplier": 10.0,
+        "trend_diversity_weight": 2.0
     },
     "strategy_settings": {
         "min_trend_confidence": 0.40,

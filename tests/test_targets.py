@@ -52,7 +52,7 @@ def test_target_categories_within_valid_ranges():
     df = make_ohlcv()
     intraday = make_intraday_from_daily(df)
     targets = compute_targets(df, intraday)
-    assert targets['trend'].isin([0, 1, 2]).all()
+    assert targets['trend'].isin([0, 1]).all()
     assert targets['range'].isin([0, 1, 2, 3]).all()
     assert targets['close_position'].isin([0, 1, 2]).all()
     assert targets['upper_wick'].isin([0, 1, 2]).all()
@@ -73,7 +73,7 @@ def test_extreme_bullish_candle_is_labeled_bullish():
     intraday = make_intraday_from_daily(df)
 
     targets = compute_targets(df, intraday)
-    assert targets['trend'].iloc[-1] == 2  # bullish
+    assert targets['trend'].iloc[-1] == 1  # bullish
 
 
 def test_close_position_matches_manual_formula():

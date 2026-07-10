@@ -6,6 +6,12 @@
 # (durchsichtiger + etwas breiter als die echten Kerzen), damit auf einen Blick sichtbar
 # ist, wie nah Prognose und Realitaet beieinander liegen.
 #
+# Die Prognose-Kerze nutzt NUR trend+range (reconstruct_simple_candle), nicht die volle
+# Docht-/Close-Geometrie -- close_position/upper_wick/lower_wick zeigten in OOS-Tests
+# (2026-07-09) kaum Vorhersagekraft ueber Zufall, waehrend range brauchbar ist. Die volle
+# Rekonstruktion wuerde Praezision vortaeuschen, die das Modell nicht hat (Lehre aus pbot:
+# lieber wenig und ehrlich vorhersagen als viel und falsch).
+#
 # Nur Out-of-Sample-Beispiele (Validierungsmenge, wie beim Signal-Backtest) werden gezeigt --
 # Trainings-Beispiele wuerden auswendig gelernte (zu optimistische) Treffer vorspiegeln.
 import argparse
@@ -23,6 +29,7 @@ from backtest_signal import (
     ARTIFACTS_DIR, load_ohlcv_by_symbol, load_settings, load_model_and_scaler,
     load_val_examples_by_symbol,
 )
+from oraclebot.model.reconstruct import reconstruct_simple_candle
 from oraclebot.strategy.backtest import predict_for_examples
 
 GREEN = '\033[0;32m'
@@ -35,11 +42,15 @@ NC = '\033[0m'
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..')
 CHARTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'charts')
 
-REAL_HALF_WIDTH = 0.30
-PRED_HALF_WIDTH = 0.42   # breiter als die echte Kerze
-PRED_OPACITY = 0.40      # durchsichtiger als die echte Kerze (die volldeckend ist)
+# go.Candlestick berechnet seine Breite selbst (~±0.35 bei ganzzahligem x-Abstand) -- REAL_HALF_WIDTH
+# ist nur Dokumentation dieser Annahme, kein Parameter, den wir setzen koennen. PRED_HALF_WIDTH muss
+# DEUTLICH darueber liegen, sonst verschwindet der Breiten-Unterschied bei vielen Kerzen im Antialiasing
+# (bei ±0.42 war er praktisch unsichtbar -- siehe Screenshot-Feedback vom 2026-07-09).
+REAL_HALF_WIDTH = 0.35
+PRED_HALF_WIDTH = 0.58   # spuerbar breiter als die echte Kerze, Kanten ragen sichtbar heraus
+PRED_OPACITY = 0.40      # Fuellung durchsichtig; der Rand (siehe _add_candle_shapes) bleibt kraeftig+gestrichelt
 
-TREND_COLOR = {0: '#ef5350', 1: '#ffca28', 2: '#26a69a'}  # bearish, neutral, bullish
+TREND_COLOR = {0: '#ef5350', 1: '#26a69a'}  # bearish, bullish -- kein Neutral-Bucket mehr
 REAL_UP_COLOR = '#26a69a'
 REAL_DOWN_COLOR = '#ef5350'
 
@@ -56,13 +67,17 @@ def _add_candle_shapes(fig, idx: int, o: float, h: float, l: float, c: float, ha
     import plotly.graph_objects as go
 
     body_top, body_bottom = max(o, c), min(o, c)
-    line_color = _rgba(color, min(1.0, opacity + 0.35))
+    # Rand bleibt kraeftig (fast deckend) UND gestrichelt -- nur die Flaeche ist durchsichtig.
+    # Ein rein transparenter Rand ging bei dichten Charts (viele Kerzen/wenig Pixel pro Kerze)
+    # im echten Kerzenkoerper visuell unter; gestrichelt+kraeftig liest sich auch bei Ueberlappung
+    # eindeutig als "Prognose-Ebene", nicht als Teil der echten Kerze.
+    line_color = _rgba(color, 0.95)
     fill_color = _rgba(color, opacity)
 
     # Docht (volle High-Low-Linie), dahinter -- der Body-Trace wird darueber gezeichnet.
     fig.add_trace(go.Scatter(
         x=[idx, idx], y=[l, h], mode='lines',
-        line=dict(color=line_color, width=1.5),
+        line=dict(color=line_color, width=2, dash='dot'),
         name=name, legendgroup=legend_group, showlegend=False,
         hoverinfo='skip',
     ), row=row, col=col)
@@ -73,7 +88,7 @@ def _add_candle_shapes(fig, idx: int, o: float, h: float, l: float, c: float, ha
         x=[idx - half_width, idx + half_width, idx + half_width, idx - half_width, idx - half_width],
         y=[body_bottom, body_bottom, body_top, body_top, body_bottom],
         mode='lines', fill='toself',
-        line=dict(color=line_color, width=1),
+        line=dict(color=line_color, width=2.5, dash='dot'),
         fillcolor=fill_color,
         name=name, legendgroup=legend_group, showlegend=show_legend,
         text=hover_text, hoverinfo='text',
@@ -145,19 +160,25 @@ def generate_chart(symbol: str, start_date: str, end_date: str, settings: dict) 
     ), row=2, col=1)
 
     date_to_idx = {ts: i for i, ts in enumerate(real_df.index)}
-    n_matched, n_consistent = 0, 0
+    n_matched, n_trend_correct = 0, 0
     for pred in predictions:
         pred_ts = pd.Timestamp(pred['date'])
         if pred_ts not in date_to_idx:
             continue
         idx = date_to_idx[pred_ts]
-        coords = pred['coords']
         trend = pred['prediction']['trend']
+        range_cat = pred['prediction']['range']
+        # NUR trend+range verwenden -- die einzigen beiden Targets mit belegter Vorhersagekraft
+        # (OOS-Tests 2026-07-09). Die volle Docht-/Close-Geometrie (reconstruct_candle) wuerde
+        # Praezision vortaeuschen, die das Modell nicht hat -- siehe reconstruct_simple_candle().
+        coords = reconstruct_simple_candle(pred['prev_close'], pred['atr'], trend, range_cat)
         color = TREND_COLOR.get(trend, '#ffca28')
-        trend_label = {0: 'bearish', 1: 'neutral', 2: 'bullish'}.get(trend, '?')
+        trend_label = {0: 'bearish', 1: 'bullish'}.get(trend, '?')
         confidence = pred['prediction'].get('step_probabilities', {}).get('trend', 0.0)
         n_matched += 1
-        n_consistent += int(coords['close_position_consistent'])
+        real_bar = real_df.loc[pred_ts]
+        actual_up = real_bar['close'] > real_bar['open']
+        n_trend_correct += int((trend == 1) == actual_up)
 
         hover = (f"Prognose {str(pred_ts)[:10]}<br>Trend: {trend_label} ({confidence:.0%})<br>"
                  f"O:{coords['open']:.2f} H:{coords['high']:.2f} L:{coords['low']:.2f} C:{coords['close']:.2f}")
@@ -167,9 +188,9 @@ def generate_chart(symbol: str, start_date: str, end_date: str, settings: dict) 
             name='Prognose (OOS)', legend_group='prediction', show_legend=(n_matched == 1),
             hover_text=hover, row=1, col=1)
 
-    consistency_pct = (n_consistent / n_matched * 100) if n_matched else 0.0
+    trend_hitrate_pct = (n_trend_correct / n_matched * 100) if n_matched else 0.0
     title_text = (f"{symbol} 1d — OracleBot Prognose-Overlay | Zeitraum: {start_date} bis {end_date} | "
-                  f"{n_matched} OOS-Prognosen | Konsistenz: {consistency_pct:.0f}%")
+                  f"{n_matched} OOS-Prognosen | Trend-Trefferquote: {trend_hitrate_pct:.0f}%")
 
     fig.update_layout(
         title=dict(text=title_text, font=dict(size=13), x=0.5, xanchor='center'),
@@ -187,7 +208,7 @@ def generate_chart(symbol: str, start_date: str, end_date: str, settings: dict) 
     safe_symbol = symbol.replace('/', '').replace(':', '')
     ts_stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     chart_path = os.path.join(CHARTS_DIR, f'chart_{safe_symbol}_1d_{ts_stamp}.html')
-    fig.write_html(chart_path)
+    fig.write_html(chart_path, include_plotlyjs='inline')
     return chart_path
 
 

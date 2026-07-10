@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from oraclebot.data.targets import TARGET_NAMES
 
 TARGET_CARDINALITIES = {
-    'trend': 3,            # bearish/neutral/bullish
+    'trend': 2,            # bearish/bullish -- keine Neutral-Klasse mehr (siehe targets.py)
     'range': 4,            # 0-0.5 / 0.5-1 / 1-2 / >2 ATR
     'close_position': 3,   # lower/middle/upper third
     'upper_wick': 3,        # small/medium/large
@@ -116,9 +116,17 @@ class TimeframeFusion(nn.Module):
 
     def __init__(self, d_model: int, nhead: int, dropout: float, max_timeframes: int = 16):
         super().__init__()
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
-        self.timeframe_embedding = nn.Parameter(torch.randn(1, max_timeframes, d_model) * 0.02)
+        # Staerkere (nicht die uebliche kleine 0.02-Skala) Initialisierung fuer CLS-Token und
+        # Timeframe-Embeddings: bei zu kleiner Start-Skala liegen die Attention-Scores aller
+        # Timeframes anfangs so nah beieinander, dass die Fusion leicht in einem fast-uniformen
+        # Fixpunkt haengen bleibt (wiederholt beobachteter Kollaps, 2026-07-09/10, unabhaengig
+        # von Zielgroessen-Definition und Modellgroesse). Ein bewusst groesserer Start-Abstand
+        # zwischen den Timeframe-"Identitaeten" erzwingt den Symmetriebruch von Anfang an,
+        # statt auf einen guenstigen Zufalls-Seed waehrend des Trainings zu hoffen.
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.2)
+        self.timeframe_embedding = nn.Parameter(torch.randn(1, max_timeframes, d_model) * 0.2)
         self.attention = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        nn.init.xavier_uniform_(self.attention.in_proj_weight, gain=2.0)
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, timeframe_contexts: torch.Tensor):
@@ -156,6 +164,11 @@ class StepwiseDecoder(nn.Module):
             nn.Sequential(nn.Linear(d_model, d_model), nn.ReLU(), nn.Dropout(dropout), nn.Linear(d_model, card))
             for card in self.cardinalities
         ])
+        # trend (Schritt 0) ist der einzige Decoder-Schritt ganz ohne Vorwissen aus vorherigen
+        # Schritten -- am anfaelligsten dafuer, frueh nur den konstanten Trainings-Klassenprior
+        # zu lernen (mehrfach beobachtet, 2026-07-09/10). Staerkere Init der letzten Schicht
+        # macht die Anfangs-Logits weniger uniform, aehnlich zur Fusion-Attention oben.
+        nn.init.xavier_uniform_(self.heads[0][-1].weight, gain=2.0)
 
     def forward(self, fused_context: torch.Tensor, targets: dict = None) -> dict:
         """
@@ -203,10 +216,26 @@ class MarketTransformer(nn.Module):
         logits = self.decoder(fused, targets)
         return logits, timeframe_weights
 
-    def compute_loss(self, features_by_timeframe: dict, targets: dict):
+    def compute_loss(self, features_by_timeframe: dict, targets: dict, trend_diversity_weight: float = 0.0):
+        """`trend_diversity_weight`: belohnt hohe STANDARDABWEICHUNG der Einzelvorhersagen
+
+        P(bullish) ueber das Batch -- nicht die Entropie des Batch-DURCHSCHNITTS (erste Version
+        dieses Regularisierers, verworfen 2026-07-10: ein Modell, das JEDES Beispiel gleich
+        knapp Richtung bullish kippt -- z.B. durchgehend P(bullish)=0.565 -- hat eine fast
+        maximale Durchschnitts-Entropie [0.435,0.565] UND trotzdem eine komplett kollabierte
+        argmax-Entscheidung, weil 0.565 > 0.435 fuer jedes einzelne Beispiel gilt. Durchschnitts-
+        Ausgeglichenheit und echte Beispiel-zu-Beispiel-Differenzierung sind zwei verschiedene
+        Dinge -- der urspruengliche Regularisierer bestrafte die falsche Groesse. Eine niedrige
+        Streuung (alle Vorhersagen nah beieinander, wie im beobachteten Fall) wird jetzt direkt
+        bestraft, unabhaengig davon wie ausgeglichen der Durchschnitt zufaellig aussieht.
+        """
         logits, timeframe_weights = self.forward(features_by_timeframe, targets=targets)
         losses = {name: F.cross_entropy(logits[name], targets[name]) for name in logits}
         total = sum(losses.values())
+        if trend_diversity_weight > 0:
+            bullish_probs = F.softmax(logits['trend'], dim=-1)[:, 1]
+            spread = torch.std(bullish_probs, unbiased=False)
+            total = total - trend_diversity_weight * spread
         return total, losses, timeframe_weights
 
     @torch.no_grad()
