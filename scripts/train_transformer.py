@@ -414,12 +414,10 @@ if __name__ == '__main__':
     logger.info(f"\nBester Checkpoint gespeichert: {best_checkpoint_path}")
     logger.info(f"Letzter Zwischenstand gespeichert: {checkpoint_path}")
 
-    # Hybrid-Ansatz (2026-07-10): trend/close_position/upper_wick/lower_wick werden NICHT vom
-    # Transformer-Decoder uebernommen (kollabiert dort in ~80% der Laeufe auf die Trainings-
-    # Klassenpriorisierung, siehe seed_reliability-Untersuchung), sondern von einem
-    # RandomForest auf denselben Features -- kollabierte in keinem heutigen Test und war beim
-    # trend-Ziel meist treffsicherer. range/gap_yn/inside_outside_day/high_first bleiben beim
-    # Transformer (dort kein Kollaps beobachtet).
+    # Hybrid-Ansatz (2026-07-10, TREE_TARGETS-Umfang spaeter am selben Tag korrigiert): siehe
+    # tree_ensemble.py fuer die vollstaendige Begruendung inkl. der Korrektur (Accuracy allein
+    # hatte den Kollaps von range/inside_outside_day zunaechst verschleiert). Nur gap_yn/
+    # high_first bleiben beim Transformer.
     logger.info(f"\nTrainiere RandomForest-Ensemble fuer {TREE_TARGETS} (Hybrid-Ansatz)...")
     tree_ensemble = TreeEnsemblePredictor().fit(train_examples, scaler, timeframes)
     tree_ensemble_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'tree_ensemble.pkl')

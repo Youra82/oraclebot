@@ -7,10 +7,11 @@
 # ist, wie nah Prognose und Realitaet beieinander liegen.
 #
 # Die Prognose-Kerze nutzt NUR trend+range (reconstruct_simple_candle), nicht die volle
-# Docht-/Close-Geometrie -- close_position/upper_wick/lower_wick zeigten in OOS-Tests
-# (2026-07-09) kaum Vorhersagekraft ueber Zufall, waehrend range brauchbar ist. Die volle
-# Rekonstruktion wuerde Praezision vortaeuschen, die das Modell nicht hat (Lehre aus pbot:
-# lieber wenig und ehrlich vorhersagen als viel und falsch).
+# Docht-/Close-Geometrie -- die volle Rekonstruktion wuerde Praezision vortaeuschen, die das
+# Modell nicht hat (Lehre aus pbot: lieber wenig und ehrlich vorhersagen als viel und falsch).
+# trend/range kommen inzwischen selbst vom RandomForest-Hybrid-Ensemble (siehe
+# tree_ensemble.py), nicht mehr direkt vom Transformer -- auch range war trotz plausibel
+# aussehender Accuracy grossteils kollabiert (2026-07-10, per Chart-Vergleich entdeckt).
 #
 # Nur Out-of-Sample-Beispiele (Validierungsmenge, wie beim Signal-Backtest) werden gezeigt --
 # Trainings-Beispiele wuerden auswendig gelernte (zu optimistische) Treffer vorspiegeln.

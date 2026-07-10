@@ -1,4 +1,5 @@
-from oraclebot.model.reconstruct import RANGE_BUCKET_VALUES, reconstruct_candle, reconstruct_simple_candle
+from oraclebot.model.reconstruct import (RANGE_BUCKET_MOVE_VALUES, RANGE_BUCKET_VALUES,
+                                          reconstruct_candle, reconstruct_simple_candle)
 
 
 def test_bullish_candle_has_close_above_open():
@@ -53,7 +54,7 @@ def test_close_position_consistency_flag_matches_geometry():
 
 def test_simple_candle_bullish_close_above_open_no_wicks():
     result = reconstruct_simple_candle(prev_close=100.0, atr=2.0, trend=1, range_cat=1)
-    expected_move = RANGE_BUCKET_VALUES[1] * 2.0
+    expected_move = RANGE_BUCKET_MOVE_VALUES[1] * 2.0
     assert result['open'] == 100.0
     assert result['close'] == 100.0 + expected_move
     assert result['high'] == result['close']
@@ -62,7 +63,7 @@ def test_simple_candle_bullish_close_above_open_no_wicks():
 
 def test_simple_candle_bearish_close_below_open_no_wicks():
     result = reconstruct_simple_candle(prev_close=100.0, atr=2.0, trend=0, range_cat=1)
-    expected_move = RANGE_BUCKET_VALUES[1] * 2.0
+    expected_move = RANGE_BUCKET_MOVE_VALUES[1] * 2.0
     assert result['open'] == 100.0
     assert result['close'] == 100.0 - expected_move
     assert result['high'] == result['open']

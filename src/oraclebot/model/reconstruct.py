@@ -15,6 +15,17 @@ RANGE_BUCKET_VALUES = [0.25, 0.75, 1.5, 2.5]           # zu RANGE_LABELS-Bins [0
 CLOSE_POSITION_BUCKET_VALUES = [1 / 6, 0.5, 5 / 6]      # zu Bins [0,1/3,2/3,1]
 WICK_BUCKET_VALUES = [0.075, 0.25, 0.45]                # zu WICK_LABELS-Bins [0,0.15,0.35,inf]
 
+# `range` misst die volle High-Low-Spanne der Kerze (inkl. Dochte) -- NICHT die Open-Close-
+# Bewegung (Body). reconstruct_simple_candle() braucht aber die Body-Bewegung (Open->Close),
+# um eine Kerze zu bauen; RANGE_BUCKET_VALUES dafuer zu verwenden ueberschaetzt sie systematisch
+# (Docht-Anteile zaehlen mit, obwohl sie nicht zur Close-Verschiebung beitragen) -- beobachtet
+# als 2-4x zu grosse Prognose-Kerzen im Chart-Overlay (2026-07-10). Empirisch aus den
+# Trainingsdaten kalibriert (Median der tatsaechlichen |Close-PrevClose|/ATR JE range-Bucket,
+# nur Trainingsdaten, kein Leck aus Validierung): deutlich kleiner als die reinen Bucket-Mitten.
+# NUR fuer reconstruct_simple_candle -- RANGE_BUCKET_VALUES bleibt fuer signal.py unveraendert,
+# dort ist die volle Spanne (Risiko-/Volatilitaetsmass fuer SL/TP) die richtige Groesse.
+RANGE_BUCKET_MOVE_VALUES = [0.0818, 0.2902, 0.638, 1.8113]
+
 
 def reconstruct_candle(prev_close: float, atr: float, trend: int, range_cat: int,
                         close_position_cat: int, upper_wick_cat: int, lower_wick_cat: int) -> dict:
@@ -72,18 +83,19 @@ def reconstruct_candle(prev_close: float, atr: float, trend: int, range_cat: int
 def reconstruct_simple_candle(prev_close: float, atr: float, trend: int, range_cat: int) -> dict:
     """Rekonstruiert eine Kerze NUR aus trend+range -- den beiden Targets mit tatsaechlich
 
-    validierter Vorhersagekraft (OOS-Tests 2026-07-09: range ~47-53% vs. 25% Baseline;
-    close_position/upper_wick/lower_wick dagegen kaum ueber Zufall, 31-47% bei
-    Mehrklassen-Baselines um 25-33%). Der volle `reconstruct_candle()` taeuscht durch die
+    validierter Vorhersagekraft. Der volle `reconstruct_candle()` taeuscht durch die
     Docht-/Close-Geometrie eine Praezision vor, die das Modell nicht hat -- `signal.py`
     vermeidet das fuer SL/TP bereits bewusst (siehe Kommentar dort), diese Funktion zieht
     dieselbe Konsequenz fuer die Chart-Darstellung: die gesamte vorhergesagte Bewegung wird
-    als Body gezeigt (Open=prev_close, Close=Open +/- range), ohne Docht -- ehrlich statt
-    fein-koernig falsch.
+    als Body gezeigt (Open=prev_close, Close=Open +/- Bewegung), ohne Docht -- ehrlich statt
+    fein-koernig falsch. Nutzt RANGE_BUCKET_MOVE_VALUES (empirisch kalibrierte Body-Bewegung),
+    NICHT RANGE_BUCKET_VALUES (volle High-Low-Spanne inkl. Dochte) -- siehe Kommentar dort
+    fuer die Herleitung; die Verwechslung der beiden fuehrte zu 2-4x zu grossen Prognose-
+    Kerzen im Chart (entdeckt 2026-07-10 durch direkten Vergleich mit den echten Kerzen).
     """
     open_price = prev_close
-    range_price = RANGE_BUCKET_VALUES[range_cat] * atr
-    close_price = open_price + range_price if trend == 1 else open_price - range_price
+    move_price = RANGE_BUCKET_MOVE_VALUES[range_cat] * atr
+    close_price = open_price + move_price if trend == 1 else open_price - move_price
     return {
         'open': open_price,
         'close': close_price,

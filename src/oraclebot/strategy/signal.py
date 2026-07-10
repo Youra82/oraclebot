@@ -2,11 +2,12 @@
 # Uebersetzt eine Modell-Vorhersage in ein konkretes Handelssignal (Richtung, Entry, SL, TP).
 #
 # Bewusste Design-Entscheidung: SL/TP haengen NICHT an den exakten rekonstruierten
-# Body-/Wick-Koordinaten (reconstruct.py), sondern werden aus `trend` (Richtung) und `range`
-# (Groesse) kalibriert -- laut Out-of-Sample-Auswertung ist `range` der zuverlaessigste Kopf
-# (50-59% Genauigkeit, Baseline 25%), waehrend `upper_wick`/`lower_wick` teils nicht besser
-# als Raten sind (23-44%, Baseline 33%). Die exakten Docht-Koordinaten als harte SL/TP-Grenze
-# zu verwenden wuerde die staerkste Schwaeche des Modells direkt ins Risiko-Management vererben.
+# Body-/Wick-Koordinaten (reconstruct.py), sondern nur an `trend` (Richtung) und `range`
+# (Groesse). Diese beiden -- wie alle geometrischen Ziele ausser high_first/gap_yn -- kommen
+# seit 2026-07-10 vom RandomForest-Ensemble (tree_ensemble.py), nicht mehr vom Transformer:
+# `range` sah anhand der reinen Accuracy zunaechst wie der zuverlaessigste Kopf aus, war aber
+# tatsaechlich zu 131/132 Beispielen auf einen einzigen Bucket kollabiert (ein Chart-Vergleich
+# mit den echten Kerzen deckte das auf, die Accuracy allein hatte es verschleiert).
 from oraclebot.model.reconstruct import RANGE_BUCKET_VALUES
 
 

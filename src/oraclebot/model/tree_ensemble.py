@@ -9,8 +9,18 @@
 # Entscheidungsbaum kein erreichbarer, bequemer Gradientenabstieg-Fluchtpunkt wie fuer ein
 # per Cross-Entropy trainiertes neuronales Netz bei schwachem Signal.
 #
-# Uebernimmt daher NUR die schwachen Zielgroessen; range/gap_yn/inside_outside_day/high_first
-# bleiben beim Transformer (dort kollabiert nichts, siehe OOS-Tests).
+# KORREKTUR (2026-07-10, spaeter am selben Tag): urspruenglich nur trend/close_position/
+# upper_wick/lower_wick uebernommen, weil range/gap_yn/inside_outside_day/high_first anhand
+# ihrer Accuracy-Zahlen (44-59%, 72-77%) als "kollabiert nicht" eingestuft wurden -- OHNE die
+# Vorhersage-VERTEILUNG direkt zu pruefen, wie bei trend. Ein User-Vergleich der Chart-Kerzen
+# mit den echten Kerzen deckte auf: range war zu 131/132 auf einem einzigen Bucket kollabiert
+# (Accuracy sah trotzdem "brauchbar" aus, weil das die zweithaeufigste echte Klasse war) und
+# inside_outside_day war zu 132/132 auf der Mehrheitsklasse kollabiert (die "75.8% Accuracy"
+# war schlicht der Mehrheitsklassen-Anteil). Lehre: Accuracy allein erkennt Kollaps NICHT
+# zuverlaessig -- nur ein direkter Verteilungs-Check tut das. gap_yn ist eine echte Ausnahme
+# (die echten Labels sind in dieser Datenmenge selbst zu 100% eine Klasse -- "immer 0" ist dort
+# die korrekte Antwort, kein Kollaps). high_first zeigte als einziges Ziel echte, mit der
+# Realitaet uebereinstimmende Diversitaet und bleibt beim Transformer.
 import pickle
 
 import numpy as np
@@ -18,7 +28,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 from oraclebot.data.features import FEATURE_NAMES
 
-TREE_TARGETS = ['trend', 'close_position', 'upper_wick', 'lower_wick']
+TREE_TARGETS = ['trend', 'range', 'close_position', 'upper_wick', 'lower_wick', 'inside_outside_day']
 
 
 def flat_features(example: dict, scaler, timeframes: list) -> np.ndarray:

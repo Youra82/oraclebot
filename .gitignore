@@ -18,3 +18,10 @@ artifacts/datasets/market_transformer.pt
 # Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant
 # (siehe artifacts/results/seed_reliability*.json fuer die ausgewerteten, aufbewahrten Studien).
 artifacts/datasets/training_diagnostics.json
+
+# Exploratives Rohmaterial fuer verworfene externe-Datenquellen-Tests (2026-07-10: Funding
+# Rate, DXY, Fear&Greed -- keiner zeigte einen robusten Effekt, siehe Commit-Historie fuer die
+# Begruendung). Nicht Teil der Produktions-Pipeline, jederzeit neu abrufbar bei Bedarf.
+artifacts/datasets/binance_funding_btc.pkl
+artifacts/datasets/dxy_index.pkl
+artifacts/datasets/fear_greed_index.pkl

@@ -42,9 +42,9 @@ def predict_for_examples(examples: list, model, scaler, ohlcv_by_symbol: dict, t
     Nutzt die bereits im Beispiel gespeicherten Feature-Fenster (kein erneutes compute_features).
 
     `tree_ensemble`: optionaler TreeEnsemblePredictor (Hybrid-Ansatz, 2026-07-10) -- ersetzt die
-    Transformer-eigenen Vorhersagen fuer TREE_TARGETS (trend/close_position/upper_wick/
-    lower_wick, die schwachen, kollapsanfaelligen Ziele) durch RandomForest-Vorhersagen auf
-    denselben Features. range/gap_yn/inside_outside_day/high_first bleiben vom Transformer.
+    Transformer-eigenen Vorhersagen fuer TREE_TARGETS (die kollapsanfaelligen Ziele, siehe
+    tree_ensemble.py) durch RandomForest-Vorhersagen auf denselben Features. Nur gap_yn/
+    high_first bleiben vom Transformer.
 
     Returns:
         Liste von dicts: {symbol, date, reference_time, target, prediction, prev_close, atr, coords}.
