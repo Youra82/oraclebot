@@ -129,7 +129,14 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
     else:
         exchange = ccxt.bitget({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
         timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
-        since_ms = int(cached.index[-1].value // 1_000_000)  # letzte gecachte Kerze neu bestaetigen
+        # -1ms, NICHT die exakte Kerzen-Zeit: Bitgets `since` ist exklusiv (liefert nur
+        # timestamp > since), ein since=<Zeitstempel der letzten Kerze> haette diese Kerze
+        # NIE erneut zurueckbekommen -- sie blieb dadurch fuer immer auf dem Stand eingefroren,
+        # zu dem sie urspruenglich gecacht wurde (beobachtet 2026-07-11: prev_close zeigte
+        # dauerhaft den OPEN-Preis statt des finalen Close, weil die 1d-Kerze direkt nach
+        # Tagesbeginn gecacht und danach nie mehr aktualisiert wurde -- Open~Close zu dem
+        # sehr fruehen Zeitpunkt, daher unbemerkt plausibel bis der Kurs sich deutlich bewegte).
+        since_ms = int(cached.index[-1].value // 1_000_000) - 1
         fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50), since_ms=since_ms)
         if len(fresh) == 0:
             logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte nichts, nutze reinen Cache-Stand.")
