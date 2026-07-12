@@ -173,14 +173,20 @@ if __name__ == '__main__':
     # unbekanntem Grund keine neue Kerze aufgenommen hatte -- ohne diesen Check waere das
     # unbemerkt als scheinbar gueltige Prognose durchgegangen). Lieber laut abbrechen als
     # eine Prognose fuer die falsche Kerze per Telegram verschicken.
+    #
+    # Schwelle bewusst bei 30h, NICHT bei 2 Tagen: unter normalem Betrieb ist die letzte
+    # abgeschlossene Tageskerze IMMER < 24h alt (sie schliesst jeden Tag neu). Ein "genau einen
+    # Tag zu alt"-Fehler (wie am 2026-07-12 beobachtet: 07-11 statt 07-12) liegt bei ~24-48h
+    # Staleness -- eine 2-Tage-Schwelle haette genau diesen realen Fall NICHT gefangen.
     staleness = pd.Timestamp.now(tz='UTC') - last_closed_date
-    max_staleness = pd.Timedelta(days=2)
+    max_staleness = pd.Timedelta(hours=30)
     if staleness > max_staleness:
         raise RuntimeError(
             f"Die letzte abgeschlossene Tageskerze ({last_closed_date.date()}) ist "
-            f"{staleness.days} Tage alt -- ungewoehnlich veraltet fuer einen taeglichen Lauf. "
-            f"Wahrscheinlich ein Cache-/Fetch-Fehler (siehe artifacts/datasets/ohlcv_live_*.pkl). "
-            f"Breche kontrolliert ab, statt eine Prognose fuer die falsche Kerze zu senden.")
+            f"{staleness.total_seconds() / 3600:.1f}h alt -- mehr als die erwarteten <24h fuer "
+            f"einen taeglichen Lauf. Wahrscheinlich ein Cache-/Fetch-Fehler (siehe "
+            f"artifacts/datasets/ohlcv_live_*.pkl). Breche kontrolliert ab, statt eine Prognose "
+            f"fuer die falsche Kerze zu senden.")
 
     logger.info("\nBaue Feature-Fenster je Timeframe...")
     features_by_timeframe = {}
