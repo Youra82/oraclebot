@@ -129,16 +129,21 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
     else:
         exchange = ccxt.bitget({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
         timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
-        # -1ms, NICHT die exakte Kerzen-Zeit: Bitgets `since` ist exklusiv (liefert nur
-        # timestamp > since), ein since=<Zeitstempel der letzten Kerze> haette diese Kerze
-        # NIE erneut zurueckbekommen -- sie blieb dadurch fuer immer auf dem Stand eingefroren,
-        # zu dem sie urspruenglich gecacht wurde (beobachtet 2026-07-11: prev_close zeigte
-        # dauerhaft den OPEN-Preis statt des finalen Close, weil die 1d-Kerze direkt nach
-        # Tagesbeginn gecacht und danach nie mehr aktualisiert wurde -- Open~Close zu dem
-        # sehr fruehen Zeitpunkt, daher unbemerkt plausibel bis der Kurs sich deutlich bewegte).
-        since_ms = int(cached.index[-1].value // 1_000_000) - 1
+        # Re-Confirm-Fenster: NICHT nur die letzte Kerze, sondern die letzten REFRESH_WINDOW
+        # Kerzen. Grund (gefunden 2026-07-13 anhand sichtbar zu duenner/doji-artiger Kerzen im
+        # Chart): jede Kerze bekommt beim alten "nur die letzte Zeile"-Ansatz GENAU EINEN Lauf
+        # lang die Chance, korrigiert zu werden -- sobald eine neuere Kerze angehaengt wird,
+        # faellt die vorherige aus dem Fenster und bleibt fuer immer eingefroren, selbst wenn sie
+        # beim genau diesem einen Fetch zufaellig noch unfertig war (z.B. weil an einem Lauf
+        # mehrere neue Kerzen auf einmal auftauchten). Mit einem Fenster von mehreren Kerzen
+        # bekommt jede Kerze stattdessen mehrere Laeufe hintereinander die Chance, sich auf
+        # ihren finalen Wert einzupendeln, bevor sie aus dem Fenster faellt.
+        REFRESH_WINDOW = 5
+        refresh_from_idx = max(0, len(cached) - REFRESH_WINDOW)
+        since_ms = int(cached.index[refresh_from_idx].value // 1_000_000) - 1
         logger.info(f"{symbol} {timeframe}: Cache-Stand bis {cached.index[-1]} ({len(cached)} Kerzen), "
-                    f"hole inkrementell ab since={pd.Timestamp(since_ms, unit='ms', tz='UTC')}...")
+                    f"hole inkrementell ab since={pd.Timestamp(since_ms, unit='ms', tz='UTC')} "
+                    f"(bestaetigt die letzten {len(cached) - refresh_from_idx} gecachten Kerzen erneut)...")
         fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50), since_ms=since_ms)
         if len(fresh) == 0:
             logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte NICHTS (since="
@@ -148,7 +153,7 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
         else:
             logger.info(f"{symbol} {timeframe}: frischer Fetch liefert {len(fresh)} Kerze(n), "
                         f"{fresh.index[0]} bis {fresh.index[-1]}.")
-            df = pd.concat([cached.iloc[:-1], fresh]) if len(cached) > 1 else fresh
+            df = pd.concat([cached.iloc[:refresh_from_idx], fresh])
             df = df[~df.index.duplicated(keep='last')].sort_index()
         logger.info(f"{symbol} {timeframe}: {len(fresh) if len(fresh) else 0} neue/aktualisierte Kerze(n) "
                     f"seit Cache-Stand ({len(cached)} -> {len(df)}), letzte Kerze jetzt: {df.index[-1]}.")
