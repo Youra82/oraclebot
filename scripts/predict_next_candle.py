@@ -168,6 +168,20 @@ if __name__ == '__main__':
     logger.info(f"\nLetzte abgeschlossene Tageskerze: {last_closed_date.date()}")
     logger.info(f"Vorhersage gilt fuer: {target_date.date()}")
 
+    # Sicherheitsnetz gegen stille Cache-/Fetch-Fehler (2026-07-12 beobachtet: der Cronjob
+    # schickte eine Prognose fuer den VORHERIGEN Tag, weil der inkrementelle Live-Cache aus
+    # unbekanntem Grund keine neue Kerze aufgenommen hatte -- ohne diesen Check waere das
+    # unbemerkt als scheinbar gueltige Prognose durchgegangen). Lieber laut abbrechen als
+    # eine Prognose fuer die falsche Kerze per Telegram verschicken.
+    staleness = pd.Timestamp.now(tz='UTC') - last_closed_date
+    max_staleness = pd.Timedelta(days=2)
+    if staleness > max_staleness:
+        raise RuntimeError(
+            f"Die letzte abgeschlossene Tageskerze ({last_closed_date.date()}) ist "
+            f"{staleness.days} Tage alt -- ungewoehnlich veraltet fuer einen taeglichen Lauf. "
+            f"Wahrscheinlich ein Cache-/Fetch-Fehler (siehe artifacts/datasets/ohlcv_live_*.pkl). "
+            f"Breche kontrolliert ab, statt eine Prognose fuer die falsche Kerze zu senden.")
+
     logger.info("\nBaue Feature-Fenster je Timeframe...")
     features_by_timeframe = {}
     for tf in timeframes:

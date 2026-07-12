@@ -137,15 +137,21 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
         # Tagesbeginn gecacht und danach nie mehr aktualisiert wurde -- Open~Close zu dem
         # sehr fruehen Zeitpunkt, daher unbemerkt plausibel bis der Kurs sich deutlich bewegte).
         since_ms = int(cached.index[-1].value // 1_000_000) - 1
+        logger.info(f"{symbol} {timeframe}: Cache-Stand bis {cached.index[-1]} ({len(cached)} Kerzen), "
+                    f"hole inkrementell ab since={pd.Timestamp(since_ms, unit='ms', tz='UTC')}...")
         fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50), since_ms=since_ms)
         if len(fresh) == 0:
-            logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte nichts, nutze reinen Cache-Stand.")
+            logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte NICHTS (since="
+                           f"{pd.Timestamp(since_ms, unit='ms', tz='UTC')}), nutze reinen Cache-Stand "
+                           f"({cached.index[-1]}) unveraendert weiter.")
             df = cached
         else:
+            logger.info(f"{symbol} {timeframe}: frischer Fetch liefert {len(fresh)} Kerze(n), "
+                        f"{fresh.index[0]} bis {fresh.index[-1]}.")
             df = pd.concat([cached.iloc[:-1], fresh]) if len(cached) > 1 else fresh
             df = df[~df.index.duplicated(keep='last')].sort_index()
         logger.info(f"{symbol} {timeframe}: {len(fresh) if len(fresh) else 0} neue/aktualisierte Kerze(n) "
-                    f"seit Cache-Stand ({len(cached)} -> {len(df)}).")
+                    f"seit Cache-Stand ({len(cached)} -> {len(df)}), letzte Kerze jetzt: {df.index[-1]}.")
 
     # Cache nicht unbegrenzt wachsen lassen -- genug Puffer fuer kuenftige Fenster-Vergroesserungen.
     if len(df) > min_candles * 3:
