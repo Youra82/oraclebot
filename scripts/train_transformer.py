@@ -418,11 +418,11 @@ if __name__ == '__main__':
     # tree_ensemble.py fuer die vollstaendige Begruendung inkl. der Korrektur (Accuracy allein
     # hatte den Kollaps von range/inside_outside_day zunaechst verschleiert). Nur gap_yn/
     # high_first bleiben beim Transformer.
-    logger.info(f"\nTrainiere RandomForest-Ensemble fuer {TREE_TARGETS} (Hybrid-Ansatz)...")
+    logger.info(f"\nTrainiere Baum-Ensemble fuer {TREE_TARGETS} (Hybrid-Ansatz)...")
     tree_ensemble = TreeEnsemblePredictor().fit(train_examples, scaler, timeframes)
     tree_ensemble_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'tree_ensemble.pkl')
     tree_ensemble.save(tree_ensemble_path)
-    logger.info(f"RandomForest-Ensemble gespeichert: {tree_ensemble_path}")
+    logger.info(f"Baum-Ensemble gespeichert: {tree_ensemble_path}")
 
     X_train_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in train_examples])
     X_val_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in val_examples])

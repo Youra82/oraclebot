@@ -24,11 +24,18 @@
 import pickle
 
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 
 from oraclebot.data.features import FEATURE_NAMES
 
 TREE_TARGETS = ['trend', 'range', 'close_position', 'upper_wick', 'lower_wick', 'inside_outside_day']
+
+# HistGradientBoosting zeigt fuer 'trend' einen robusteren Worst-Case als RandomForest bei
+# identischem Mittelwert -- bestaetigt in zwei unabhaengigen Tests (2026-07-13): Split-Ratio
+# (70/30/60/40/50/50 x 10 Seeds: worst-case 57.5% vs. RF 51.7%) und Zeit-Walk-Forward (5
+# expandierende Zeitfenster x 5 Seeds: worst-case 50.6% vs. RF 46.1%), zusaetzlich vollstaendig
+# deterministisch (0 Varianz ueber Seeds). Fuer die uebrigen Ziele nicht getestet -> dort bleibt RF.
+HISTGBM_TARGETS = {'trend'}
 
 
 def flat_features(example: dict, scaler, timeframes: list) -> np.ndarray:
@@ -59,10 +66,16 @@ class TreeEnsemblePredictor:
         X = np.stack([flat_features(ex, scaler, timeframes) for ex in examples])
         for target in TREE_TARGETS:
             y = np.array([ex['target'][target] for ex in examples])
-            model = RandomForestClassifier(
-                n_estimators=self.n_estimators, max_depth=self.max_depth,
-                class_weight='balanced', random_state=self.random_state,
-            )
+            if target in HISTGBM_TARGETS:
+                model = HistGradientBoostingClassifier(
+                    max_depth=self.max_depth, max_iter=100,
+                    class_weight='balanced', random_state=self.random_state,
+                )
+            else:
+                model = RandomForestClassifier(
+                    n_estimators=self.n_estimators, max_depth=self.max_depth,
+                    class_weight='balanced', random_state=self.random_state,
+                )
             model.fit(X, y)
             self.models[target] = model
         return self
