@@ -7,7 +7,12 @@ requests
 matplotlib
 
 # Data
-numpy
+# EXAKT gepinnt (nicht nur unversioniert): RandomForest/HistGBM-Modelle picklen intern einen
+# numpy BitGenerator-RNG-Zustand, dessen Format sich zwischen numpy-Versionen aendert -- ein
+# Versions-Mismatch zwischen Trainings- und Inferenz-Umgebung fuehrt zu "PCG64 is not a known
+# BitGenerator module" beim Laden von tree_ensemble.pkl (VPS 2026-07-13, derselbe Fehlertyp wie
+# schon beim sklearn-Pin unten).
+numpy==2.3.5
 pandas==2.1.3
 
 # Technical Indicators
