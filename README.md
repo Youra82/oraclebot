@@ -598,19 +598,35 @@ crontab -e
 ```
 
 ```cron
+CRON_TZ=UTC
 # oraclebot -> offset 60s
 5 0 * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot.lock /bin/sh -c "sleep 60; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/predict_next_candle.py >> /pfad/zu/oraclebot/logs/cron.log 2>&1"
 ```
 
 Läuft nur **einmal täglich** (nicht wie ltbbot/mbot alle 15 Min — die prüfen kontinuierlich auf
 Signale, oraclebot prognostiziert genau eine Kerze pro Tag; ein häufigerer Lauf würde bis zum
-nächsten Kerzenwechsel dieselbe Prognose wiederholt per Telegram senden). `5 0 * * *` setzt
-voraus, dass der Server in **UTC** läuft (bei den meisten frischen Ubuntu/Debian-VPS
-Standard — mit `timedatectl` prüfen; falls nicht UTC, die Uhrzeit auf das lokale Äquivalent von
-00:00 UTC umrechnen). `sleep 60` staffelt den Start etwas ab (z.B. gegenüber anderen
-Cronjobs auf demselben Server). `flock` verhindert überlappende Läufe. `OMP_NUM_THREADS=1` /
-`MKL_NUM_THREADS=1` begrenzen das numpy/sklearn-Threading (relevant für die
-RandomForest-Inferenz) — sinnvoll auf einem ressourcenschwachen Rechner.
+nächsten Kerzenwechsel dieselbe Prognose wiederholt per Telegram senden).
+
+**`CRON_TZ=UTC` ist nicht optional**, wenn der Server nicht selbst in UTC läuft (mit
+`timedatectl` prüfen — viele VPS sind in der lokalen Zeitzone des Providers/Nutzers
+konfiguriert, nicht UTC). Wichtiger Unterschied, der uns am 2026-07-13 einen ganzen
+Debugging-Tag gekostet hat: eine simple `TZ=UTC`-Zeile in der Crontab reicht **nicht** —
+`TZ=` setzt nur die Umgebungsvariable für den gestarteten Prozess, beeinflusst aber nicht,
+wie cron selbst die Zeitfelder auswertet. Nur `CRON_TZ=` (Vixie-cron/cronie-spezifisch)
+steuert die tatsächliche Trigger-Zeit. Ohne das feuert `5 0 * * *` in der
+Server-Lokalzeitzone (z.B. 00:05 CEST = 22:05 UTC am Vortag) statt um 00:05 UTC — die
+Prognose landet dann auf der falschen (vorherigen) Kerze, und der
+[Staleness-Guard](#live-trading-echte-order-platzierung) bricht korrekt, aber verwirrend ab.
+`CRON_TZ=UTC` gilt ab der Zeile, in der es steht, für alle folgenden Jobs in derselben
+Crontab-Datei — bei mehreren Bots auf demselben Server ganz oben in der Datei plazieren,
+falls sie alle in UTC laufen sollen, oder nur direkt vor die oraclebot-Zeile, falls andere
+Bots bewusst in Lokalzeit laufen sollen (z.B. weil sie ohnehin nur mit `*/N * * * *`-Intervallen
+arbeiten, die von der Zeitzone unabhängig sind).
+
+`sleep 60` staffelt den Start etwas ab (z.B. gegenüber anderen Cronjobs auf demselben
+Server). `flock` verhindert überlappende Läufe. `OMP_NUM_THREADS=1` / `MKL_NUM_THREADS=1`
+begrenzen das numpy/sklearn-Threading (relevant für die RandomForest-Inferenz) — sinnvoll
+auf einem ressourcenschwachen Rechner.
 
 #### 3. Update auf neue Version
 
