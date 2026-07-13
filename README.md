@@ -628,7 +628,37 @@ begrenzen das numpy/sklearn-Threading (relevant für die RandomForest-Inferenz) 
 auf einem ressourcenschwachen Rechner. `--force` überspringt das Zeitfenster-Gate (für
 manuelles Testen der regulären, nicht-`--preview`-Prognose zu beliebiger Uhrzeit).
 
-#### 3. Update auf neue Version
+#### 3. Setup verifizieren
+
+Von schnell/risikofrei bis zum echten Vollbeweis, der Reihe nach:
+
+```bash
+# 1) Automatisierte Tests -- reine Logik-Absicherung, prueft NICHT die Cron-Integration
+.venv/bin/python3 -m pytest tests/
+
+# 2) Gate-Verhalten manuell verifizieren -- sollte SOFORT abbrechen mit
+#    "Ausserhalb des taeglichen Ausfuehrungsfensters... Ueberspringe" (ausser gerade 00:00-00:29 UTC)
+.venv/bin/python3 scripts/predict_next_candle.py
+
+# 3) Den echten Vorhersage-Pfad sofort pruefen, ohne bis Mitternacht zu warten
+#    (umgeht nur das Zeitfenster, fuehrt sonst exakt dieselbe Logik aus)
+.venv/bin/python3 scripts/predict_next_candle.py --force
+```
+
+```bash
+# 4) Cron+Gate-Zusammenspiel live beobachten (~15 Min warten):
+tail -f logs/cron.log
+```
+Beim naechsten 15-Minuten-Tick sollte **automatisch** (ohne eigenes Zutun) dieselbe
+"Ueberspringe"-Zeile aus Schritt 2 im Log erscheinen -- das beweist, dass cron den Job
+wirklich alle 15 Minuten ausloest UND das Skript korrekt selbst entscheidet, nichts zu tun.
+
+**Der eigentliche Beweis:** zwischen 00:00-00:15 UTC sollte automatisch (ohne `--force`,
+ohne eigenes Zutun) die echte Prognose per Telegram ankommen -- das ist der einzige Test,
+der alles zusammen prueft (Cron-Intervall, Zeitfenster-Gate, Cache, Vorhersage, Telegram) in
+exakt der Konfiguration, die dauerhaft laufen soll.
+
+#### 4. Update auf neue Version
 
 ```bash
 ./update.sh
