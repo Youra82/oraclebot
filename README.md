@@ -352,7 +352,7 @@ gleiches Muster wie mbot/dbot/ltbbot) und `src/oraclebot/strategy/live_trade.py`
 (Order-Orchestrierung).
 
 ```
-Jeder Cronjob-Lauf (00:05 UTC), wenn live_trading_enabled=true:
+Jeder Cronjob-Lauf im taeglichen Zeitfenster (00:00-00:29 UTC), wenn live_trading_enabled=true:
 
   Offene Position fuer das Symbol vorhanden?
     ├── Ja  → Kein neuer Entry (kein Stacking). Nur loggen.
@@ -589,44 +589,44 @@ cp secret.json.example secret.json && nano secret.json   # Telegram-Zugangsdaten
 
 #### 2. Cronjob einrichten
 
-Bitgets Tageskerze schließt um **00:00 UTC** — der Cronjob läuft kurz danach, damit die
-Prognose garantiert die nächste (noch nicht begonnene) Kerze trifft, nicht die gerade
-abgeschlossene:
+Bitgets Tageskerze schließt um **00:00 UTC**. Naheliegend wäre ein Cronjob, der einmal
+täglich kurz danach läuft (`5 0 * * *`) — das setzt aber voraus, dass cron die Zeitfelder in
+UTC auswertet. **Tut es auf vielen Servern nicht**, und selbst die vermeintlich saubere
+Lösung dafür erwies sich als brüchig (siehe Kasten unten). Der robuste Ansatz umgeht das
+Problem komplett, statt es zu reparieren:
 
 ```bash
 crontab -e
 ```
 
 ```cron
-CRON_TZ=UTC
-# oraclebot -> offset 60s
-5 0 * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot.lock /bin/sh -c "sleep 60; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/predict_next_candle.py >> /pfad/zu/oraclebot/logs/cron.log 2>&1"
+# oraclebot -> offset 60s, laeuft alle 15 Min wie die anderen Bots -- das Skript selbst
+# entscheidet per Python-eigener UTC-Uhr, ob gerade das taegliche Ausfuehrungsfenster ist
+*/15 * * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot.lock /bin/sh -c "sleep 60; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/predict_next_candle.py >> /pfad/zu/oraclebot/logs/cron.log 2>&1"
 ```
 
-Läuft nur **einmal täglich** (nicht wie ltbbot/mbot alle 15 Min — die prüfen kontinuierlich auf
-Signale, oraclebot prognostiziert genau eine Kerze pro Tag; ein häufigerer Lauf würde bis zum
-nächsten Kerzenwechsel dieselbe Prognose wiederholt per Telegram senden).
+`predict_next_candle.py` läuft dadurch bis zu 96×/Tag, tut aber bei 95 dieser Aufrufe absichtlich
+**nichts**: ein Zeitfenster-Gate am Skriptanfang prüft `pd.Timestamp.now(tz='UTC')` und beendet
+sich sofort (Exit-Code 0, kein Fehler) außerhalb von 00:00–00:29 UTC. Da dieser Check in Python
+läuft, ist er von der Server-/cron-Zeitzonenkonfiguration komplett unabhängig — `*/15 * * * *`
+selbst ist ohnehin zeitzonenunabhängig (ein Intervall, keine absolute Uhrzeit), also gibt es
+hier gar keine Zeitzonen-Fehlerquelle mehr, im Gegensatz zu einer absoluten Cron-Uhrzeit.
 
-**`CRON_TZ=UTC` ist nicht optional**, wenn der Server nicht selbst in UTC läuft (mit
-`timedatectl` prüfen — viele VPS sind in der lokalen Zeitzone des Providers/Nutzers
-konfiguriert, nicht UTC). Wichtiger Unterschied, der uns am 2026-07-13 einen ganzen
-Debugging-Tag gekostet hat: eine simple `TZ=UTC`-Zeile in der Crontab reicht **nicht** —
-`TZ=` setzt nur die Umgebungsvariable für den gestarteten Prozess, beeinflusst aber nicht,
-wie cron selbst die Zeitfelder auswertet. Nur `CRON_TZ=` (Vixie-cron/cronie-spezifisch)
-steuert die tatsächliche Trigger-Zeit. Ohne das feuert `5 0 * * *` in der
-Server-Lokalzeitzone (z.B. 00:05 CEST = 22:05 UTC am Vortag) statt um 00:05 UTC — die
-Prognose landet dann auf der falschen (vorherigen) Kerze, und der
-[Staleness-Guard](#live-trading-echte-order-platzierung) bricht korrekt, aber verwirrend ab.
-`CRON_TZ=UTC` gilt ab der Zeile, in der es steht, für alle folgenden Jobs in derselben
-Crontab-Datei — bei mehreren Bots auf demselben Server ganz oben in der Datei plazieren,
-falls sie alle in UTC laufen sollen, oder nur direkt vor die oraclebot-Zeile, falls andere
-Bots bewusst in Lokalzeit laufen sollen (z.B. weil sie ohnehin nur mit `*/N * * * *`-Intervallen
-arbeiten, die von der Zeitzone unabhängig sind).
+> **Warum nicht `CRON_TZ=UTC` + `5 0 * * *`?** Genau das war der ursprüngliche Plan — bis er
+> am 2026-07-13 an einem realen VPS scheiterte: zwei tatsächliche Cronjob-Läufe feuerten
+> nachweislich (per `grep oraclebot /var/log/syslog` verifiziert) um 00:05 **Server-Lokalzeit
+> (CEST)**, nicht UTC, obwohl `CRON_TZ=UTC` gesetzt war — die installierte `cron`-Version
+> unterstützt es vermutlich schlicht nicht. Noch davor hatte sich gezeigt, dass eine simple
+> `TZ=UTC`-Zeile ebenfalls nicht reicht: `TZ=` setzt nur die Umgebungsvariable des gestarteten
+> Prozesses, beeinflusst aber nicht, wie cron selbst die Zeitfelder auswertet — nur `CRON_TZ=`
+> tut das, und selbst das ist nicht auf jedem System verlässlich. Das Zeitfenster-Gate in
+> Python macht die ganze Frage "unterstützt dieser Cron `CRON_TZ`?" irrelevant.
 
 `sleep 60` staffelt den Start etwas ab (z.B. gegenüber anderen Cronjobs auf demselben
 Server). `flock` verhindert überlappende Läufe. `OMP_NUM_THREADS=1` / `MKL_NUM_THREADS=1`
 begrenzen das numpy/sklearn-Threading (relevant für die RandomForest-Inferenz) — sinnvoll
-auf einem ressourcenschwachen Rechner.
+auf einem ressourcenschwachen Rechner. `--force` überspringt das Zeitfenster-Gate (für
+manuelles Testen der regulären, nicht-`--preview`-Prognose zu beliebiger Uhrzeit).
 
 #### 3. Update auf neue Version
 
@@ -653,8 +653,11 @@ tail -n 200 logs/cron.log          # Letzte 200 Zeilen
 
 #### Manueller Prognose-Lauf (Test)
 
+Ohne `--force` außerhalb von 00:00-00:29 UTC wirkungslos (Zeitfenster-Gate beendet das Skript
+sofort, siehe [Cronjob einrichten](#2-cronjob-einrichten)):
+
 ```bash
-cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_candle.py
+cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_candle.py --force
 ```
 
 #### Sofort-Vorschau ohne auf 00:00 UTC zu warten

@@ -123,7 +123,28 @@ if __name__ == '__main__':
                               "prognostiziert bereits jetzt die danach folgende Kerze -- nur zur "
                               "Vorschau, NICHT die reguaere taegliche Prognose (die laueft per "
                               "Cronjob kurz nach 00:00 UTC auf echten abgeschlossenen Kerzen).")
+    parser.add_argument('--force', action='store_true',
+                         help="Ignoriert das Zeitfenster-Gate (siehe unten) und laeuft sofort, "
+                              "auch ausserhalb 00:00-00:29 UTC. Fuer manuelles Testen der "
+                              "regulaeren (nicht --preview) Prognose zu beliebiger Uhrzeit.")
     args = parser.parse_args()
+
+    # Zeitfenster-Gate statt Verlass auf cron-eigene Zeitzonen-Behandlung: `CRON_TZ=UTC` in der
+    # Crontab erwies sich auf dem VPS als wirkungslos (2026-07-13 verifiziert -- zwei echte
+    # Cronjob-Laeufe feuerten trotz CRON_TZ=UTC nachweislich um 00:05 SERVER-LOKALZEIT/CEST,
+    # nicht UTC; vermutlich unterstuetzt die installierte cron-Version CRON_TZ gar nicht). Ein
+    # in Python berechnetes `datetime.now(UTC)` ist dagegen unabhaengig von jeder
+    # Server-/cron-Zeitzonen-Konfiguration garantiert korrekt. Die Crontab laeuft daher wie die
+    # anderen Bots einfach alle 15 Minuten (siehe README) -- dieses Gate sorgt dafuer, dass nur
+    # der Lauf kurz nach 00:00 UTC tatsaechlich etwas tut, alle anderen 95 taeglichen Aufrufe
+    # beenden sich sofort ohne Nebeneffekte.
+    if not args.preview and not args.force:
+        now_utc = pd.Timestamp.now(tz='UTC')
+        if not (now_utc.hour == 0 and now_utc.minute < 30):
+            print(f"Ausserhalb des taeglichen Ausfuehrungsfensters (00:00-00:29 UTC), aktuell "
+                  f"{now_utc.strftime('%H:%M')} UTC. Ueberspringe (kein Fehler) -- laeuft beim "
+                  f"naechsten passenden Cron-Intervall erneut.")
+            sys.exit(0)
 
     settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
     settings = load_settings(settings_path)
