@@ -236,7 +236,8 @@ if __name__ == '__main__':
     prediction = model.predict_beam(feature_tensors, beam_width=model_cfg['beam_width'])
 
     # Hybrid-Ansatz (2026-07-10): trend/close_position/upper_wick/lower_wick kommen, falls
-    # trainiert, vom RandomForest-Ensemble statt vom Transformer-Decoder -- siehe tree_ensemble.py.
+    # trainiert, vom Baum-Ensemble statt vom Transformer-Decoder -- siehe tree_ensemble.py.
+    # (trend laeuft seit 2026-07-13 ueber HistGBM statt RandomForest, siehe HISTGBM_TARGETS dort.)
     tree_ensemble_path = os.path.join(artifacts_dir, 'tree_ensemble.pkl')
     if os.path.exists(tree_ensemble_path):
         tree_ensemble = TreeEnsemblePredictor.load(tree_ensemble_path)
@@ -245,7 +246,7 @@ if __name__ == '__main__':
         for name in tree_ensemble.models:
             prediction[name] = tree_prediction[name]
             prediction['step_probabilities'][name] = tree_prediction['tree_probabilities'][name]
-        logger.info("Hybrid-Vorhersage: trend/close_position/upper_wick/lower_wick vom RandomForest-Ensemble.")
+        logger.info("Hybrid-Vorhersage: trend/close_position/upper_wick/lower_wick vom Baum-Ensemble.")
 
     logger.info(f"\nVorhersage fuer die Tageskerze am {target_date.date()}:")
     for name in TARGET_NAMES:
