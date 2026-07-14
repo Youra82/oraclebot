@@ -26,8 +26,7 @@ from oraclebot.model.transformer import MarketTransformer
 from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
 from oraclebot.utils.chart_png import plot_prediction_chart
-from oraclebot.utils.daily_gate import (DEFAULT_NOTIFICATION_TIME_LOCAL, check_daily_gate,
-                                         mark_daily_run_complete, max_expected_staleness)
+from oraclebot.utils.daily_gate import check_daily_gate, mark_daily_run_complete
 from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message, send_photo
 
@@ -124,13 +123,12 @@ if __name__ == '__main__':
                          help="Behandelt die noch laufende Tageskerze als abgeschlossen und "
                               "prognostiziert bereits jetzt die danach folgende Kerze -- nur zur "
                               "Vorschau, NICHT die reguaere taegliche Prognose (die laueft per "
-                              "Cronjob zur in settings.json konfigurierten "
-                              "notification_time_local, deutsche Ortszeit).")
+                              "Cronjob kurz nach 00:00 UTC auf echten abgeschlossenen Kerzen).")
     parser.add_argument('--force', action='store_true',
                          help="Ignoriert das Zeitfenster-Gate UND den Tages-Marker komplett und "
-                              "laeuft sofort, unabhaengig von notification_time_local. Fuer "
-                              "manuelles Testen der regulaeren (nicht --preview) Prognose zu "
-                              "beliebiger Uhrzeit -- markiert den Tag NICHT als erledigt.")
+                              "laeuft sofort, auch ausserhalb 00:00-00:29 UTC. Fuer manuelles "
+                              "Testen der regulaeren (nicht --preview) Prognose zu beliebiger "
+                              "Uhrzeit -- markiert den Tag NICHT als erledigt.")
     parser.add_argument('--simulate-now', type=str, default=None,
                          help="NUR fuers manuelle Testen des Gate+Marker-Zusammenspiels: "
                               "ueberschreibt die fuer das Zeitfenster-Gate verwendete UTC-Zeit "
@@ -146,12 +144,6 @@ if __name__ == '__main__':
                               "Mitternachts-Cronjob blockiert.")
     args = parser.parse_args()
 
-    settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
-    settings = load_settings(settings_path)
-    ds_cfg = settings['dataset_settings']
-    model_cfg = settings['model_settings']
-    train_cfg = settings['training_settings']
-
     # Zeitfenster-Gate statt Verlass auf cron-eigene Zeitzonen-Behandlung: `CRON_TZ=UTC` in der
     # Crontab erwies sich auf dem VPS als wirkungslos (2026-07-13 verifiziert -- zwei echte
     # Cronjob-Laeufe feuerten trotz CRON_TZ=UTC nachweislich um 00:05 SERVER-LOKALZEIT/CEST,
@@ -160,8 +152,7 @@ if __name__ == '__main__':
     # Server-/cron-Zeitzonen-Konfiguration garantiert korrekt. Die Crontab laeuft daher wie die
     # anderen Bots einfach alle 15 Minuten (siehe README) -- die eigentliche Fenster+Marker-Logik
     # steckt in daily_gate.py (testbar ohne auf echte Mitternacht zu warten, siehe
-    # tests/test_daily_gate.py). Die gewuenschte Uhrzeit (deutsche Ortszeit) kommt aus
-    # notification_settings.notification_time_local.
+    # tests/test_daily_gate.py).
     now_utc = pd.Timestamp(args.simulate_now, tz='UTC') if args.simulate_now else pd.Timestamp.now(tz='UTC')
     if args.simulate_now:
         logger.warning(f"--simulate-now aktiv: Gate+Marker verwenden {now_utc} statt der echten "
@@ -169,13 +160,17 @@ if __name__ == '__main__':
                         f"bleiben unveraendert echt.")
     last_run_marker_path = args.marker_path or os.path.join(
         os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
-    notification_time_local = settings.get('notification_settings', {}).get(
-        'notification_time_local', DEFAULT_NOTIFICATION_TIME_LOCAL)
     if not args.preview and not args.force:
-        should_run, skip_reason = check_daily_gate(now_utc, last_run_marker_path, notification_time_local)
+        should_run, skip_reason = check_daily_gate(now_utc, last_run_marker_path)
         if not should_run:
             print(skip_reason)
             sys.exit(0)
+
+    settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
+    settings = load_settings(settings_path)
+    ds_cfg = settings['dataset_settings']
+    model_cfg = settings['model_settings']
+    train_cfg = settings['training_settings']
 
     symbol = 'BTC/USDT:USDT'
     timeframes = model_cfg['timeframes']
@@ -205,9 +200,8 @@ if __name__ == '__main__':
         logger.warning("\n--preview: die noch laufende Tageskerze wird mit ihrem AKTUELLEN (noch "
                         "nicht finalen) Stand als abgeschlossen behandelt. Das ist eine Vorschau, "
                         "keine echte Prognose -- Open/High/Low/Close koennen sich bis Handelsschluss "
-                        "noch aendern. Die echte taegliche Prognose kommt per Cronjob zur "
-                        f"konfigurierten Zeit ({notification_time_local} deutscher Ortszeit) auf "
-                        "Basis der tatsaechlich abgeschlossenen Kerze.")
+                        "noch aendern. Die echte taegliche Prognose kommt per Cronjob kurz nach "
+                        "00:00 UTC auf Basis der tatsaechlich abgeschlossenen Kerze.")
 
     daily_df = ohlcv_by_timeframe[ds_cfg['reference_timeframe']]
     last_closed_date = daily_df.index[-1]
@@ -221,21 +215,19 @@ if __name__ == '__main__':
     # unbemerkt als scheinbar gueltige Prognose durchgegangen). Lieber laut abbrechen als
     # eine Prognose fuer die falsche Kerze per Telegram verschicken.
     #
-    # Schwelle dynamisch statt fest bei 30h (2026-07-14): die "erwartete" Staleness haengt davon
-    # ab, WANN am Tag notification_time_local den Lauf ausloest (24h Kerzendauer + Abstand von
-    # UTC-Mitternacht bis zur konfigurierten Uhrzeit) -- ein fixer Wert war nur fuer eine feste
-    # "kurz nach Mitternacht"-Ausfuehrung richtig kalibriert und haette bei spaeteren
-    # konfigurierten Uhrzeiten jeden Tag faelschlich abgebrochen. Siehe daily_gate.max_expected_staleness().
+    # Schwelle bewusst bei 30h, NICHT bei 2 Tagen: unter normalem Betrieb ist die letzte
+    # abgeschlossene Tageskerze IMMER < 24h alt (sie schliesst jeden Tag neu). Ein "genau einen
+    # Tag zu alt"-Fehler (wie am 2026-07-12 beobachtet: 07-11 statt 07-12) liegt bei ~24-48h
+    # Staleness -- eine 2-Tage-Schwelle haette genau diesen realen Fall NICHT gefangen.
     staleness = pd.Timestamp.now(tz='UTC') - last_closed_date
-    max_staleness = max_expected_staleness(now_utc, notification_time_local)
+    max_staleness = pd.Timedelta(hours=30)
     if staleness > max_staleness:
         raise RuntimeError(
             f"Die letzte abgeschlossene Tageskerze ({last_closed_date.date()}) ist "
-            f"{staleness.total_seconds() / 3600:.1f}h alt -- mehr als die fuer "
-            f"notification_time_local={notification_time_local} erwarteten "
-            f"{max_staleness.total_seconds() / 3600:.1f}h. Wahrscheinlich ein Cache-/Fetch-Fehler "
-            f"(siehe artifacts/datasets/ohlcv_live_*.pkl). Breche kontrolliert ab, statt eine "
-            f"Prognose fuer die falsche Kerze zu senden.")
+            f"{staleness.total_seconds() / 3600:.1f}h alt -- mehr als die erwarteten <24h fuer "
+            f"einen taeglichen Lauf. Wahrscheinlich ein Cache-/Fetch-Fehler (siehe "
+            f"artifacts/datasets/ohlcv_live_*.pkl). Breche kontrolliert ab, statt eine Prognose "
+            f"fuer die falsche Kerze zu senden.")
 
     logger.info("\nBaue Feature-Fenster je Timeframe...")
     features_by_timeframe = {}

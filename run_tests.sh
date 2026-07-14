@@ -31,21 +31,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "Marker-Datei -- kann daher niemals den naechsten echten Mitternachts-Cronjob blockieren."
     SMOKE_MARKER="artifacts/datasets/smoke_test_marker.txt"
     rm -f "$SMOKE_MARKER"
-    # Simuliert die HEUTIGE konfigurierte notification_time_local (settings.json) in UTC --
-    # nicht fest "00:05", sonst wuerde der Smoke-Test bei einer anderen als der Standard-
-    # Uhrzeit die falsche Zeit treffen und faelschlich "noch nicht so weit" melden.
-    SIM_TIME="$(python3 -c "
-import json
-import pandas as pd
-from zoneinfo import ZoneInfo
-
-with open('settings.json') as f:
-    notif_time = json.load(f)['notification_settings'].get('notification_time_local', '02:05')
-h, m = (int(p) for p in notif_time.split(':'))
-now_local = pd.Timestamp.now(tz='UTC').tz_convert(ZoneInfo('Europe/Berlin'))
-target_local = now_local.normalize() + pd.Timedelta(hours=h, minutes=m)
-print(target_local.tz_convert('UTC').strftime('%Y-%m-%d %H:%M'))
-")"
+    SIM_TIME="$(date -u +%Y-%m-%d) 00:05"
 
     echo ""
     echo "1. Lauf (sollte eine ECHTE Telegram-Nachricht senden, falls konfiguriert)..."
