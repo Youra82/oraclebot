@@ -136,6 +136,12 @@ if __name__ == '__main__':
                               "Telegram-Versand) bleibt echt. Zweimal mit demselben Wert "
                               "aufrufen zeigt live: 1. Lauf sendet, 2. Lauf wird durch den "
                               "Marker uebersprungen. Wird vom Cronjob NIE genutzt.")
+    parser.add_argument('--marker-path', type=str, default=None,
+                         help="Ueberschreibt den Pfad der Tages-Marker-Datei (Standard: "
+                              "artifacts/datasets/last_prediction_run.txt). Nur fuer Tests "
+                              "gedacht -- damit ein Testlauf NICHT den echten Produktions-Marker "
+                              "beschreibt und so versehentlich den naechsten echten "
+                              "Mitternachts-Cronjob blockiert.")
     args = parser.parse_args()
 
     # Zeitfenster-Gate statt Verlass auf cron-eigene Zeitzonen-Behandlung: `CRON_TZ=UTC` in der
@@ -152,7 +158,8 @@ if __name__ == '__main__':
         logger.warning(f"--simulate-now aktiv: Gate+Marker verwenden {now_utc} statt der echten "
                         f"Systemzeit. NUR fuers manuelle Testen -- Datenabruf/Modell/Telegram "
                         f"bleiben unveraendert echt.")
-    last_run_marker_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
+    last_run_marker_path = args.marker_path or os.path.join(
+        os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
     if not args.preview and not args.force:
         should_run, skip_reason = check_daily_gate(now_utc, last_run_marker_path)
         if not should_run:
