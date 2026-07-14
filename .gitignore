@@ -27,3 +27,13 @@ artifacts/datasets/training_diagnostics.json
 artifacts/datasets/binance_funding_btc.pkl
 artifacts/datasets/dxy_index.pkl
 artifacts/datasets/fear_greed_index.pkl
+
+# Weitere verworfene externe-Datenquellen-Tests (2026-07-13: Binance-Orderflow-Metriken,
+# On-Chain-Metriken, GDELT-News-Sentiment -- keiner zeigte einen robusten Effekt).
+artifacts/datasets/binance_futures_metrics_BTC_daily.csv
+artifacts/datasets/onchain_metrics_BTC_daily.csv
+artifacts/datasets/gdelt_bitcoin_tone_daily.csv
+
+# Ephemerer Tages-Marker gegen Telegram-Doppelversand (siehe predict_next_candle.py):
+# haelt fest, fuer welchen UTC-Tag die Prognose schon gesendet wurde.
+artifacts/datasets/last_prediction_run.txt

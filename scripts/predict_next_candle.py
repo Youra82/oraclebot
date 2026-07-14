@@ -138,6 +138,7 @@ if __name__ == '__main__':
     # anderen Bots einfach alle 15 Minuten (siehe README) -- dieses Gate sorgt dafuer, dass nur
     # der Lauf kurz nach 00:00 UTC tatsaechlich etwas tut, alle anderen 95 taeglichen Aufrufe
     # beenden sich sofort ohne Nebeneffekte.
+    last_run_marker_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
     if not args.preview and not args.force:
         now_utc = pd.Timestamp.now(tz='UTC')
         if not (now_utc.hour == 0 and now_utc.minute < 30):
@@ -145,6 +146,23 @@ if __name__ == '__main__':
                   f"{now_utc.strftime('%H:%M')} UTC. Ueberspringe (kein Fehler) -- laeuft beim "
                   f"naechsten passenden Cron-Intervall erneut.")
             sys.exit(0)
+
+        # Das 30-Minuten-Fenster deckt ZWEI *//15-Cron-Ticks ab (:00 und :15), nicht nur einen --
+        # ohne diese Sperre laeuft die komplette Prognose- und Telegram-Logik zweimal pro Nacht
+        # mit leicht unterschiedlichen Zahlen (die Intraday-Kerzen sind 15 Minuten weiter), siehe
+        # Beobachtung 2026-07-14: zwei Telegram-Nachrichten um 00:01 und 00:16 UTC mit
+        # unterschiedlicher Konfidenz/SL/TP fuer dieselbe Zielkerze. Der breite Zeitpuffer bleibt
+        # (schuetzt gegen verzoegerte/uebersprungene Cron-Ticks), aber nur der ERSTE erfolgreiche
+        # Lauf pro UTC-Tag darf tatsaechlich etwas senden.
+        today_str = now_utc.strftime('%Y-%m-%d')
+        if os.path.exists(last_run_marker_path):
+            with open(last_run_marker_path, 'r', encoding='utf-8') as f:
+                last_run_date = f.read().strip()
+            if last_run_date == today_str:
+                print(f"Heutige Prognose ({today_str}) wurde bereits gesendet (siehe "
+                      f"{last_run_marker_path}). Ueberspringe (kein Fehler), verhindert "
+                      f"Doppel-Versand durch mehrere Cron-Ticks im 00:00-00:29-Fenster.")
+                sys.exit(0)
 
     settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
     settings = load_settings(settings_path)
@@ -329,3 +347,9 @@ if __name__ == '__main__':
             send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
     else:
         logger.info("(notification_settings.telegram_enabled=false -- keine Telegram-Nachricht gesendet.)")
+
+    # Nur der echte, ungesteuerte Cron-Pfad markiert den Tag als erledigt -- ein manueller
+    # --force-Testlauf tagsueber soll NICHT den spaeteren echten 00:00-UTC-Lauf blockieren.
+    if not args.preview and not args.force:
+        with open(last_run_marker_path, 'w', encoding='utf-8') as f:
+            f.write(today_str)
