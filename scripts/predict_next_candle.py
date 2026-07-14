@@ -125,9 +125,17 @@ if __name__ == '__main__':
                               "Vorschau, NICHT die reguaere taegliche Prognose (die laueft per "
                               "Cronjob kurz nach 00:00 UTC auf echten abgeschlossenen Kerzen).")
     parser.add_argument('--force', action='store_true',
-                         help="Ignoriert das Zeitfenster-Gate (siehe unten) und laeuft sofort, "
-                              "auch ausserhalb 00:00-00:29 UTC. Fuer manuelles Testen der "
-                              "regulaeren (nicht --preview) Prognose zu beliebiger Uhrzeit.")
+                         help="Ignoriert das Zeitfenster-Gate UND den Tages-Marker komplett und "
+                              "laeuft sofort, auch ausserhalb 00:00-00:29 UTC. Fuer manuelles "
+                              "Testen der regulaeren (nicht --preview) Prognose zu beliebiger "
+                              "Uhrzeit -- markiert den Tag NICHT als erledigt.")
+    parser.add_argument('--simulate-now', type=str, default=None,
+                         help="NUR fuers manuelle Testen des Gate+Marker-Zusammenspiels: "
+                              "ueberschreibt die fuer das Zeitfenster-Gate verwendete UTC-Zeit "
+                              "(Format 'YYYY-MM-DD HH:MM'), alles andere (Datenabruf, Modell, "
+                              "Telegram-Versand) bleibt echt. Zweimal mit demselben Wert "
+                              "aufrufen zeigt live: 1. Lauf sendet, 2. Lauf wird durch den "
+                              "Marker uebersprungen. Wird vom Cronjob NIE genutzt.")
     args = parser.parse_args()
 
     # Zeitfenster-Gate statt Verlass auf cron-eigene Zeitzonen-Behandlung: `CRON_TZ=UTC` in der
@@ -139,7 +147,11 @@ if __name__ == '__main__':
     # anderen Bots einfach alle 15 Minuten (siehe README) -- die eigentliche Fenster+Marker-Logik
     # steckt in daily_gate.py (testbar ohne auf echte Mitternacht zu warten, siehe
     # tests/test_daily_gate.py).
-    now_utc = pd.Timestamp.now(tz='UTC')
+    now_utc = pd.Timestamp(args.simulate_now, tz='UTC') if args.simulate_now else pd.Timestamp.now(tz='UTC')
+    if args.simulate_now:
+        logger.warning(f"--simulate-now aktiv: Gate+Marker verwenden {now_utc} statt der echten "
+                        f"Systemzeit. NUR fuers manuelle Testen -- Datenabruf/Modell/Telegram "
+                        f"bleiben unveraendert echt.")
     last_run_marker_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
     if not args.preview and not args.force:
         should_run, skip_reason = check_daily_gate(now_utc, last_run_marker_path)
