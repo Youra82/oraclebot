@@ -83,6 +83,7 @@
     },
     "notification_settings": {
         "telegram_enabled": true,
-        "telegram_send_chart": true
+        "telegram_send_chart": true,
+        "notification_time_local": "02:05"
     }
 }
