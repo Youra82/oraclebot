@@ -26,6 +26,7 @@ from oraclebot.model.transformer import MarketTransformer
 from oraclebot.model.tree_ensemble import TreeEnsemblePredictor
 from oraclebot.strategy.signal import compute_position_size, compute_trade_signal
 from oraclebot.utils.chart_png import plot_prediction_chart
+from oraclebot.utils.daily_gate import check_daily_gate, mark_daily_run_complete
 from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message, send_photo
 
@@ -135,34 +136,16 @@ if __name__ == '__main__':
     # nicht UTC; vermutlich unterstuetzt die installierte cron-Version CRON_TZ gar nicht). Ein
     # in Python berechnetes `datetime.now(UTC)` ist dagegen unabhaengig von jeder
     # Server-/cron-Zeitzonen-Konfiguration garantiert korrekt. Die Crontab laeuft daher wie die
-    # anderen Bots einfach alle 15 Minuten (siehe README) -- dieses Gate sorgt dafuer, dass nur
-    # der Lauf kurz nach 00:00 UTC tatsaechlich etwas tut, alle anderen 95 taeglichen Aufrufe
-    # beenden sich sofort ohne Nebeneffekte.
+    # anderen Bots einfach alle 15 Minuten (siehe README) -- die eigentliche Fenster+Marker-Logik
+    # steckt in daily_gate.py (testbar ohne auf echte Mitternacht zu warten, siehe
+    # tests/test_daily_gate.py).
+    now_utc = pd.Timestamp.now(tz='UTC')
     last_run_marker_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'last_prediction_run.txt')
     if not args.preview and not args.force:
-        now_utc = pd.Timestamp.now(tz='UTC')
-        if not (now_utc.hour == 0 and now_utc.minute < 30):
-            print(f"Ausserhalb des taeglichen Ausfuehrungsfensters (00:00-00:29 UTC), aktuell "
-                  f"{now_utc.strftime('%H:%M')} UTC. Ueberspringe (kein Fehler) -- laeuft beim "
-                  f"naechsten passenden Cron-Intervall erneut.")
+        should_run, skip_reason = check_daily_gate(now_utc, last_run_marker_path)
+        if not should_run:
+            print(skip_reason)
             sys.exit(0)
-
-        # Das 30-Minuten-Fenster deckt ZWEI *//15-Cron-Ticks ab (:00 und :15), nicht nur einen --
-        # ohne diese Sperre laeuft die komplette Prognose- und Telegram-Logik zweimal pro Nacht
-        # mit leicht unterschiedlichen Zahlen (die Intraday-Kerzen sind 15 Minuten weiter), siehe
-        # Beobachtung 2026-07-14: zwei Telegram-Nachrichten um 00:01 und 00:16 UTC mit
-        # unterschiedlicher Konfidenz/SL/TP fuer dieselbe Zielkerze. Der breite Zeitpuffer bleibt
-        # (schuetzt gegen verzoegerte/uebersprungene Cron-Ticks), aber nur der ERSTE erfolgreiche
-        # Lauf pro UTC-Tag darf tatsaechlich etwas senden.
-        today_str = now_utc.strftime('%Y-%m-%d')
-        if os.path.exists(last_run_marker_path):
-            with open(last_run_marker_path, 'r', encoding='utf-8') as f:
-                last_run_date = f.read().strip()
-            if last_run_date == today_str:
-                print(f"Heutige Prognose ({today_str}) wurde bereits gesendet (siehe "
-                      f"{last_run_marker_path}). Ueberspringe (kein Fehler), verhindert "
-                      f"Doppel-Versand durch mehrere Cron-Ticks im 00:00-00:29-Fenster.")
-                sys.exit(0)
 
     settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
     settings = load_settings(settings_path)
@@ -351,5 +334,4 @@ if __name__ == '__main__':
     # Nur der echte, ungesteuerte Cron-Pfad markiert den Tag als erledigt -- ein manueller
     # --force-Testlauf tagsueber soll NICHT den spaeteren echten 00:00-UTC-Lauf blockieren.
     if not args.preview and not args.force:
-        with open(last_run_marker_path, 'w', encoding='utf-8') as f:
-            f.write(today_str)
+        mark_daily_run_complete(now_utc, last_run_marker_path)
