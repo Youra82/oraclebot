@@ -8,10 +8,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from oraclebot.model.reconstruct import reconstruct_simple_candle
+from oraclebot.model.reconstruct import reconstruct_candle
 
 UP_COLOR = '#26a69a'
 DOWN_COLOR = '#ef5350'
+BODY_ALPHA = 0.6
+# Dochte sind ein schwaecheres, weniger validiertes Ziel als trend/range (siehe
+# reconstruct_candle()-Docstring) -- deutlich niedrigere Alpha macht das auch optisch klar:
+# der Body ist die verlaessliche Prognose, die Dochte sind eine ungefaehre Ergaenzung.
+WICK_ALPHA = 0.25
 
 
 def _draw_candle(ax, x: int, o: float, h: float, l: float, c: float, width: float = 0.6,
@@ -23,13 +28,29 @@ def _draw_candle(ax, x: int, o: float, h: float, l: float, c: float, width: floa
            alpha=alpha, edgecolor=color, linewidth=1, linestyle=linestyle, zorder=3)
 
 
+def _draw_predicted_candle(ax, x: int, o: float, h: float, l: float, c: float, width: float = 0.6):
+    """Wie _draw_candle, aber Docht und Body getrennt eingefaerbt: Body in BODY_ALPHA (die
+    verlaessliche trend+range-Prognose), Docht-Linien in WICK_ALPHA (upper_wick/lower_wick --
+    ungefaehr, schwaecher validiert). Gestrichelter Rand bleibt das Merkmal "das ist eine
+    Prognose, keine echte Kerze"."""
+    color = UP_COLOR if c >= o else DOWN_COLOR
+    body_bottom, body_top = min(o, c), max(o, c)
+    ax.plot([x, x], [l, body_bottom], color=color, linewidth=1, alpha=WICK_ALPHA, linestyle='dashed', zorder=2)
+    ax.plot([x, x], [body_top, h], color=color, linewidth=1, alpha=WICK_ALPHA, linestyle='dashed', zorder=2)
+    ax.bar(x, body_top - body_bottom, bottom=body_bottom, width=width, color=color,
+           alpha=BODY_ALPHA, edgecolor=color, linewidth=1, linestyle='dashed', zorder=3)
+
+
 def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float, trend: int, range_cat: int,
+                           close_position_cat: int, upper_wick_cat: int, lower_wick_cat: int,
                            target_date, save_path: str, n_recent: int = 30):
     """Baut ein kompaktes PNG: die letzten `n_recent` echten Tageskerzen + die vorhergesagte
-    Kerze (gestrichelt, nur trend+range -- siehe reconstruct_simple_candle() fuer die Begruendung,
-    warum NICHT die volle wick-Geometrie gezeigt wird)."""
+    Kerze (gestrichelt). Body (trend+range, verlaesslicher) in normaler Deckkraft, Dochte
+    (upper_wick/lower_wick/close_position, schwaecher validiert) deutlich transparenter --
+    siehe reconstruct_candle()-Docstring fuer die Begruendung der unterschiedlichen
+    Verlaesslichkeit."""
     recent = daily_df.iloc[-n_recent:]
-    pred = reconstruct_simple_candle(prev_close, atr, trend, range_cat)
+    pred = reconstruct_candle(prev_close, atr, trend, range_cat, close_position_cat, upper_wick_cat, lower_wick_cat)
 
     fig, ax = plt.subplots(figsize=(9, 5), dpi=120)
     for i, (_, row) in enumerate(recent.iterrows()):
@@ -38,11 +59,9 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     # Farbe folgt der tatsaechlich vorhergesagten Richtung (wie bei den echten Kerzen) --
     # NICHT ein fixes PRED_COLOR: das zeigte vorher unabhaengig von trend immer dasselbe
     # blasse Blau an, was bei einer SHORT-Prognose faelschlich neutral/gruenlich statt
-    # erkennbar rot wirkte (Nutzer-Meldung 2026-07-10). Gestrichelter Rand + Transparenz
-    # bleiben das Merkmal "das ist eine Prognose, keine echte Kerze".
+    # erkennbar rot wirkte (Nutzer-Meldung 2026-07-10).
     pred_x = len(recent)
-    _draw_candle(ax, pred_x, pred['open'], pred['high'], pred['low'], pred['close'],
-                 alpha=0.6, linestyle='dashed')
+    _draw_predicted_candle(ax, pred_x, pred['open'], pred['high'], pred['low'], pred['close'])
 
     tick_positions = list(range(0, len(recent), max(1, len(recent) // 8))) + [pred_x]
     tick_labels = [recent.index[i].strftime('%m-%d') for i in tick_positions if i < len(recent)] + [

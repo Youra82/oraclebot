@@ -100,14 +100,21 @@ def load_secrets(path: str) -> dict:
 
 def format_telegram_message(symbol: str, target_date, prediction: dict, coords: dict, signal: dict) -> str:
     trend_label = 'LONG (bullisch)' if prediction['trend'] == 1 else 'SHORT (baerisch)'
+    step_probs = prediction.get('step_probabilities', {})
+    upper_wick_conf = step_probs.get('upper_wick')
+    lower_wick_conf = step_probs.get('lower_wick')
     lines = [
         f"OracleBot Prognose -- {symbol}",
         f"Fuer Kerze: {target_date.date()}",
         "",
         f"Trend: {trend_label} (Konfidenz {signal['confidence']:.1%})",
-        f"Erwartete Spanne: {coords['low']:.2f} - {coords['high']:.2f}",
-        f"Body: {coords['body_bottom']:.2f} - {coords['body_top']:.2f}",
+        f"Body: {coords['body_bottom']:.2f} - {coords['body_top']:.2f} (verlaesslich)",
+        f"Erwartete Spanne (mit Dochten): {coords['low']:.2f} - {coords['high']:.2f}",
     ]
+    if upper_wick_conf is not None and lower_wick_conf is not None:
+        lines.append(
+            f"Docht-Konfidenz (ungefaehr, schwaecher validiert als Trend): "
+            f"oben {upper_wick_conf:.0%}, unten {lower_wick_conf:.0%}")
     if signal['direction'] is None:
         lines.append(f"\nKein Handelssignal ({signal['reason']}).")
     else:
@@ -343,6 +350,7 @@ if __name__ == '__main__':
             os.makedirs(chart_dir, exist_ok=True)
             chart_path = os.path.join(chart_dir, 'telegram_latest.png')
             plot_prediction_chart(daily_df, prev_close, atr_value, prediction['trend'], prediction['range'],
+                                   prediction['close_position'], prediction['upper_wick'], prediction['lower_wick'],
                                    target_date, chart_path)
             send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=message)
         else:
