@@ -19,7 +19,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from oraclebot.analysis.hourly_volatility import compute_hourly_volatility_profile, save_profile
+from oraclebot.analysis.hourly_volatility import (compute_hourly_path_profile,
+                                                    compute_hourly_volatility_profile,
+                                                    save_path_profile, save_profile)
 from oraclebot.data.dataset import build_training_examples, save_dataset_jsonl
 from oraclebot.data.features import FEATURE_NAMES, compute_features
 from oraclebot.data.scaler import FeatureScaler
@@ -435,9 +437,18 @@ if __name__ == '__main__':
         profile_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'hourly_volatility_profile.json')
         save_profile(profile, profile_path)
         logger.info(f"Stuendliches Volatilitaets-Profil gespeichert: {profile_path}")
+
+        # Trend-bedingter stuendlicher Pfad (siehe hourly_volatility.py): historisch typische
+        # Position innerhalb der Tagesspanne pro Stunde, getrennt nach bullischen/baerischen
+        # Tagen -- fuellt die Prognose-Kerze im Chart mit einer plausiblen Kerzenfolge statt
+        # einem symmetrischen Band (Nutzer-Wunsch 2026-07-16, aehnlich TradingView-Ansicht).
+        path_profile = compute_hourly_path_profile(hourly_df)
+        path_profile_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'hourly_path_profile.json')
+        save_path_profile(path_profile, path_profile_path)
+        logger.info(f"Stuendliches Pfad-Profil gespeichert: {path_profile_path}")
     else:
         logger.warning("Kein '1h'-Timeframe im Training gefunden -- stuendliches "
-                        "Volatilitaets-Profil wird NICHT aktualisiert.")
+                        "Volatilitaets-/Pfad-Profil wird NICHT aktualisiert.")
 
     X_train_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in train_examples])
     X_val_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in val_examples])

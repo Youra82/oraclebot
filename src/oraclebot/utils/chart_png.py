@@ -65,45 +65,46 @@ def _draw_po3_levels(ax, recent: pd.DataFrame, n_candles: int = 3):
     ax.legend(handles=[body_handle, wick_handle], loc='upper left', fontsize=7, framealpha=0.7)
 
 
-HOURLY_VOL_COLOR = '#5b8def'
+def _draw_hourly_path_panel(ax, path_profile: dict, trend: int, predicted_open: float,
+                             predicted_low: float, predicted_high: float):
+    """Fuellt die vorhergesagte Tageskerze mit einer plausiblen stuendlichen Kerzenfolge:
+    historisch typische Position innerhalb der Tagesspanne pro Stunde, getrennt nach
+    bullischen/baerischen Tagen (siehe analysis/hourly_volatility.compute_hourly_path_profile()),
+    skaliert auf die HEUTIGE Prognose (Trend + Range). Gezeichnet mit derselben _draw_candle()-
+    Funktion wie die echten Kerzen oben -- also echte rot/gruen-Faerbung je nach Stunden-
+    Richtung, kein neutraler Platzhalter.
 
+    WICHTIG: das ist KEINE Pfad-Vorhersage fuer heute im engeren Sinne -- es zeigt, wie sich
+    Tage mit dieser Trendrichtung historisch im Schnitt stundenweise aufgebaut haben, auf die
+    heutige Range projiziert. Der Docht (Streuung, WICK_ALPHA) zeigt die Tag-zu-Tag-Variation
+    dieses Musters -- schmal = konsistentes historisches Muster, breit = mit Vorsicht zu
+    geniessen (bewusst keine einzelne "Konfidenz"-Zahl, siehe fruehere Version dieser Funktion
+    in der Git-Historie fuer die Begruendung)."""
+    hours_data = path_profile.get(trend, path_profile.get(str(trend), {}))
+    hours = sorted(hours_data.keys())
+    predicted_range = predicted_high - predicted_low
 
-def _draw_hourly_volatility_candle(ax, x: int, anchor: float, mean_move: float, std_move: float,
-                                    width: float = 0.6, color: str = HOURLY_VOL_COLOR):
-    """Synthetische 'Kerze' fuer eine Stunde, im selben visuellen Stil wie die echten Kerzen
-    oben: Body = typische Bewegungsgroesse um den Anker (BODY_ALPHA), Docht = zusaetzliche
-    Tag-zu-Tag-Streuung in der Historie (WICK_ALPHA, wie beim Rest des Charts: schwaecher
-    validiert/unsicherer -> transparenter). Neutrale Einheitsfarbe statt rot/gruen -- wir haben
-    keine Richtungsinformation pro Stunde, nur eine Betragsgroesse."""
-    body_bottom, body_top = anchor - mean_move / 2, anchor + mean_move / 2
-    wick_low, wick_high = body_bottom - std_move, body_top + std_move
-    ax.plot([x, x], [wick_low, wick_high], color=color, linewidth=1, alpha=WICK_ALPHA, zorder=2)
-    ax.bar(x, body_top - body_bottom, bottom=body_bottom, width=width, color=color,
-           alpha=BODY_ALPHA, edgecolor=color, linewidth=1, zorder=3)
-
-
-def _draw_hourly_volatility_panel(ax, hourly_profile: dict, predicted_range: float, anchor_price: float):
-    """Historisches stuendliches Volatilitaets-Profil (siehe analysis/hourly_volatility.py),
-    skaliert auf die heute vorhergesagte Tages-Range -- KEINE Pfad-Vorhersage, nur die
-    historisch typische Groessenordnung pro Stunde. Auf ABSOLUTER Preisskala um `anchor_price`
-    (Kerzen-Open) dargestellt -- direkt vergleichbar mit dem Hauptchart, statt einer
-    abstrakten "Bewegungsgroesse ab 0" (verwirrte 2026-07-16: Skala passte optisch nicht zum
-    Chart darueber). Jede Stunde zeigt unabhaengig eine synthetische Kerze um denselben Anker,
-    NICHT einen kumulativen Pfad -- wir haben kein Modell dafuer, wo der Preis zu Beginn jeder
-    Stunde stehen wuerde, nur wie viel sich in einer *einzelnen* Stunde historisch typischerweise
-    bewegt (Body) und wie stark das von Tag zu Tag streut (Docht). Bewusst keine einzelne
-    "Konfidenz"-Kennzahl (ein erster Versuch mit 1/(1+Variationskoeffizient) unterschied kaum
-    zwischen den Stunden und taeuschte Praezision vor, die die Streuung nicht hergibt)."""
-    hours = sorted(hourly_profile.keys())
+    prev_close_price = predicted_open
     for h in hours:
-        mean_move = hourly_profile[h]['mean'] * predicted_range
-        std_move = hourly_profile[h]['std'] * predicted_range
-        _draw_hourly_volatility_candle(ax, h, anchor_price, mean_move, std_move)
+        mean_frac = hours_data[h]['mean']
+        std_frac = hours_data[h]['std']
+        close_price = predicted_low + mean_frac * predicted_range
+        wick_extra = std_frac * predicted_range / 2
+        o, c = prev_close_price, close_price
+        color = UP_COLOR if c >= o else DOWN_COLOR
+        body_bottom, body_top = min(o, c), max(o, c)
+        ax.plot([h, h], [body_bottom - wick_extra, body_top + wick_extra], color=color,
+                linewidth=1, alpha=WICK_ALPHA, zorder=2)
+        ax.bar(h, body_top - body_bottom, bottom=body_bottom, width=0.6, color=color,
+               alpha=BODY_ALPHA, edgecolor=color, linewidth=1, zorder=3)
+        prev_close_price = close_price
 
-    ax.axhline(anchor_price, color='#333333', linestyle='-', linewidth=1, alpha=0.6)
+    ax.axhline(predicted_low, color='gray', linestyle=':', linewidth=0.8, alpha=0.4)
+    ax.axhline(predicted_high, color='gray', linestyle=':', linewidth=0.8, alpha=0.4)
     ax.set_xlabel('Stunde (UTC)')
     ax.set_ylabel('USDT')
-    ax.set_title('Historisches stuendliches Volatilitaets-Profil um den Kerzen-Open (Docht = Streuung)', fontsize=9)
+    trend_word = 'bullisch' if trend == 1 else 'baerisch'
+    ax.set_title(f"Historisch typischer stuendlicher Pfad fuer {trend_word} vorhergesagte Tage (skaliert)", fontsize=9)
     ax.set_xticks(range(0, 24, 2))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
     ax.grid(alpha=0.2)
@@ -111,19 +112,19 @@ def _draw_hourly_volatility_panel(ax, hourly_profile: dict, predicted_range: flo
 
 def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float, trend: int, range_cat: int,
                            close_position_cat: int, upper_wick_cat: int, lower_wick_cat: int,
-                           target_date, save_path: str, n_recent: int = 30, hourly_profile: dict = None):
+                           target_date, save_path: str, n_recent: int = 30, hourly_path_profile: dict = None):
     """Baut ein kompaktes PNG: die letzten `n_recent` echten Tageskerzen + die vorhergesagte
     Kerze (gestrichelt). Body (trend+range, verlaesslicher) in normaler Deckkraft, Dochte
     (upper_wick/lower_wick/close_position, schwaecher validiert) deutlich transparenter --
     siehe reconstruct_candle()-Docstring fuer die Begruendung der unterschiedlichen
     Verlaesslichkeit.
 
-    `hourly_profile` (optional, von hourly_volatility.load_profile()): wenn angegeben, wird ein
-    zweites Panel darunter angehaengt (siehe _draw_hourly_volatility_panel())."""
+    `hourly_path_profile` (optional, von hourly_volatility.load_path_profile()): wenn angegeben,
+    wird ein zweites Panel darunter angehaengt (siehe _draw_hourly_path_panel())."""
     recent = daily_df.iloc[-n_recent:]
     pred = reconstruct_candle(prev_close, atr, trend, range_cat, close_position_cat, upper_wick_cat, lower_wick_cat)
 
-    if hourly_profile:
+    if hourly_path_profile:
         fig, (ax, ax_hourly) = plt.subplots(
             2, 1, figsize=(9, 6.5), dpi=120, gridspec_kw={'height_ratios': [3, 1]})
     else:
@@ -156,9 +157,9 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     ax.yaxis.set_major_locator(MaxNLocator(nbins=14))
     ax.grid(alpha=0.2)
 
-    if hourly_profile:
-        predicted_range = pred['high'] - pred['low']
-        _draw_hourly_volatility_panel(ax_hourly, hourly_profile, predicted_range, anchor_price=pred['open'])
+    if hourly_path_profile:
+        _draw_hourly_path_panel(ax_hourly, hourly_path_profile, trend,
+                                 predicted_open=pred['open'], predicted_low=pred['low'], predicted_high=pred['high'])
 
     fig.tight_layout()
     fig.savefig(save_path)
