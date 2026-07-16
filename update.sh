@@ -20,10 +20,15 @@ echo "4. Stelle 'secret.json' aus dem Backup wieder her..."
 cp secret.json.bak secret.json
 rm secret.json.bak
 
-# 5. Loesche Python-Cache
+# 5. Loesche Python-Cache (NUR eigener Projekt-Code, nicht .venv -- dort brachen die Befehle
+#    zuvor mit "set -e" das ganze Skript ab, weil einige Drittanbieter-Pakete (z.B. torch/cuda)
+#    __pycache__-Ordner mit Dateien enthalten, die "find -delete" nicht restlos leeren kann;
+#    Cache-Bereinigung von Fremdpaketen ist ohnehin nicht unsere Aufgabe, siehe 2026-07-16).
+#    "-prune" statt "-not -path" wurde getestet und verworfen: "-delete" erzwingt "-depth"
+#    (Post-Order-Traversal), wodurch "-prune" bei find wirkungslos wird/einen Fehler wirft.
 echo "5. Loesche alten Python-Cache fuer einen sauberen Neustart..."
-find . -type f -name "*.pyc" -delete
-find . -type d -name "__pycache__" -delete
+find . -not -path './.venv/*' -type f -name "*.pyc" -delete
+find . -not -path './.venv/*' -type d -name "__pycache__" -delete
 
 # 6. Ausfuehrungsrechte setzen
 echo "6. Setze Ausfuehrungsrechte fuer alle .sh-Skripte..."
