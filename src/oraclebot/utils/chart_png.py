@@ -5,8 +5,10 @@
 # Plotly-Bildexport (braucht zusaetzlich `kaleido`).
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
 
 from oraclebot.model.reconstruct import reconstruct_candle
 
@@ -17,6 +19,7 @@ BODY_ALPHA = 0.6
 # reconstruct_candle()-Docstring) -- deutlich niedrigere Alpha macht das auch optisch klar:
 # der Body ist die verlaessliche Prognose, die Dochte sind eine ungefaehre Ergaenzung.
 WICK_ALPHA = 0.25
+PO3_LEVEL_COLOR = '#9575cd'
 
 
 def _draw_candle(ax, x: int, o: float, h: float, l: float, c: float, width: float = 0.6,
@@ -39,6 +42,27 @@ def _draw_predicted_candle(ax, x: int, o: float, h: float, l: float, c: float, w
     ax.plot([x, x], [body_top, h], color=color, linewidth=1, alpha=WICK_ALPHA, linestyle='dashed', zorder=2)
     ax.bar(x, body_top - body_bottom, bottom=body_bottom, width=width, color=color,
            alpha=BODY_ALPHA, edgecolor=color, linewidth=1, linestyle='dashed', zorder=3)
+
+
+def _draw_po3_levels(ax, recent: pd.DataFrame, n_candles: int = 3):
+    """PO3 (Power of Three)-Widerstands-/Unterstuetzungszonen: horizontale Linien auf Hoehe von
+    Body (Open/Close) und Docht (High/Low) der letzten `n_candles` ECHTEN Tageskerzen -- Preis-
+    Niveaus, an denen kuerzlich Kaeufer/Verkaeufer reagiert haben und die deshalb oft erneut als
+    Widerstand/Unterstuetzung wirken. Body-Niveaus deutlicher als Docht-Niveaus (gleiche
+    Verlaesslichkeits-Abstufung wie beim Rest des Charts)."""
+    last_candles = recent.iloc[-n_candles:]
+    for _, row in last_candles.iterrows():
+        body_top, body_bottom = max(row['open'], row['close']), min(row['open'], row['close'])
+        ax.axhline(body_top, color=PO3_LEVEL_COLOR, linestyle='--', linewidth=0.8, alpha=0.5, zorder=1)
+        ax.axhline(body_bottom, color=PO3_LEVEL_COLOR, linestyle='--', linewidth=0.8, alpha=0.5, zorder=1)
+        ax.axhline(row['high'], color=PO3_LEVEL_COLOR, linestyle=':', linewidth=0.8, alpha=0.3, zorder=1)
+        ax.axhline(row['low'], color=PO3_LEVEL_COLOR, linestyle=':', linewidth=0.8, alpha=0.3, zorder=1)
+
+    body_handle = mlines.Line2D([], [], color=PO3_LEVEL_COLOR, linestyle='--', linewidth=0.8, alpha=0.7,
+                                 label=f'Body-Niveau (letzte {n_candles} Kerzen)')
+    wick_handle = mlines.Line2D([], [], color=PO3_LEVEL_COLOR, linestyle=':', linewidth=0.8, alpha=0.5,
+                                 label=f'Docht-Niveau (letzte {n_candles} Kerzen)')
+    ax.legend(handles=[body_handle, wick_handle], loc='upper left', fontsize=7, framealpha=0.7)
 
 
 def _draw_hourly_volatility_panel(ax, hourly_profile: dict, predicted_range: float):
@@ -82,6 +106,8 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     else:
         fig, ax = plt.subplots(figsize=(9, 5), dpi=120)
 
+    _draw_po3_levels(ax, recent, n_candles=3)
+
     for i, (_, row) in enumerate(recent.iterrows()):
         _draw_candle(ax, i, row['open'], row['high'], row['low'], row['close'])
 
@@ -101,6 +127,10 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     trend_label = 'LONG' if trend == 1 else 'SHORT'
     ax.set_title(f"BTC/USDT -- Prognose {target_date.strftime('%Y-%m-%d')}: {trend_label} (gestrichelt)")
     ax.set_ylabel("USDT")
+    # Dichtere Preis-Ticks auf der linken Achse (Standard war nur alle ~2000 USDT, zu grob
+    # zum Ablesen einzelner Kurspreise) -- MaxNLocator statt fixem Abstand, damit es sich
+    # automatisch an unterschiedliche Preisspannen anpasst.
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=14))
     ax.grid(alpha=0.2)
 
     if hourly_profile:
