@@ -227,7 +227,12 @@ if __name__ == '__main__':
     # abgeschlossene Tageskerze IMMER < 24h alt (sie schliesst jeden Tag neu). Ein "genau einen
     # Tag zu alt"-Fehler (wie am 2026-07-12 beobachtet: 07-11 statt 07-12) liegt bei ~24-48h
     # Staleness -- eine 2-Tage-Schwelle haette genau diesen realen Fall NICHT gefangen.
-    staleness = pd.Timestamp.now(tz='UTC') - last_closed_date
+    #
+    # Nutzt `now_utc` (nicht nochmal `pd.Timestamp.now()`) -- sonst ignoriert dieser Check
+    # --simulate-now und schlaegt bei jedem Live-Smoke-Test (./run_tests.sh) fehl, der nicht
+    # zufaellig kurz nach echter Mitternacht laeuft (beobachtet 2026-07-16: echte Systemzeit war
+    # nachmittags, --simulate-now taeuschte nur das Zeitfenster-Gate, nicht diesen Check).
+    staleness = now_utc - last_closed_date
     max_staleness = pd.Timedelta(hours=30)
     if staleness > max_staleness:
         raise RuntimeError(
