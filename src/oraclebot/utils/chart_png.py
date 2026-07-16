@@ -66,7 +66,8 @@ def _draw_po3_levels(ax, recent: pd.DataFrame, n_candles: int = 3):
 
 
 def _draw_hourly_path_panel(ax, path_profile: dict, trend: int, predicted_open: float,
-                             predicted_low: float, predicted_high: float):
+                             predicted_low: float, predicted_high: float,
+                             predicted_body_bottom: float = None, predicted_body_top: float = None):
     """Fuellt die vorhergesagte Tageskerze mit einer plausiblen stuendlichen Kerzenfolge:
     historisch typische Position innerhalb der Tagesspanne pro Stunde, getrennt nach
     bullischen/baerischen Tagen (siehe analysis/hourly_volatility.compute_hourly_path_profile()),
@@ -99,8 +100,20 @@ def _draw_hourly_path_panel(ax, path_profile: dict, trend: int, predicted_open: 
                alpha=BODY_ALPHA, edgecolor=color, linewidth=1, zorder=3)
         prev_close_price = close_price
 
+    range_handle = mlines.Line2D([], [], color='gray', linestyle=':', linewidth=0.8, alpha=0.6,
+                                  label='Tages-Docht (High/Low)')
     ax.axhline(predicted_low, color='gray', linestyle=':', linewidth=0.8, alpha=0.4)
     ax.axhline(predicted_high, color='gray', linestyle=':', linewidth=0.8, alpha=0.4)
+    legend_handles = [range_handle]
+    # Body-Grenzen der TAGES-Prognose (nicht der stuendlichen Kerzen) -- zeigt, wohin der
+    # stuendliche Pfad relativ zum eigentlichen Tagesziel (trend+range, der verlaessliche Teil
+    # der Prognose) laufen sollte.
+    if predicted_body_bottom is not None and predicted_body_top is not None:
+        ax.axhline(predicted_body_top, color=PO3_LEVEL_COLOR, linestyle='--', linewidth=1, alpha=0.6)
+        ax.axhline(predicted_body_bottom, color=PO3_LEVEL_COLOR, linestyle='--', linewidth=1, alpha=0.6)
+        legend_handles.append(mlines.Line2D([], [], color=PO3_LEVEL_COLOR, linestyle='--', linewidth=1, alpha=0.7,
+                                             label='Tages-Body (Open/Close-Ziel)'))
+    ax.legend(handles=legend_handles, loc='upper right', fontsize=7, framealpha=0.7)
     ax.set_xlabel('Stunde (UTC)')
     ax.set_ylabel('USDT')
     trend_word = 'bullisch' if trend == 1 else 'baerisch'
@@ -159,7 +172,8 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
 
     if hourly_path_profile:
         _draw_hourly_path_panel(ax_hourly, hourly_path_profile, trend,
-                                 predicted_open=pred['open'], predicted_low=pred['low'], predicted_high=pred['high'])
+                                 predicted_open=pred['open'], predicted_low=pred['low'], predicted_high=pred['high'],
+                                 predicted_body_bottom=pred['body_bottom'], predicted_body_top=pred['body_top'])
 
     fig.tight_layout()
     fig.savefig(save_path)
