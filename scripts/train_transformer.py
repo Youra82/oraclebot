@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from oraclebot.analysis.hourly_volatility import compute_hourly_volatility_profile, save_profile
 from oraclebot.data.dataset import build_training_examples, save_dataset_jsonl
 from oraclebot.data.features import FEATURE_NAMES, compute_features
 from oraclebot.data.scaler import FeatureScaler
@@ -423,6 +424,20 @@ if __name__ == '__main__':
     tree_ensemble_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'tree_ensemble.pkl')
     tree_ensemble.save(tree_ensemble_path)
     logger.info(f"Baum-Ensemble gespeichert: {tree_ensemble_path}")
+
+    # Stuendliches Volatilitaets-Profil (siehe hourly_volatility.py): braucht die volle
+    # Mehrjahres-Historie, die nur hier beim Training vorliegt (Live-Inferenz fetcht nur ein
+    # kleines rollierendes Fenster). Aus dem ersten Symbol berechnet -- Produktion trainiert
+    # ohnehin nur auf BTC/USDT:USDT.
+    hourly_df = ohlcv_by_symbol[symbols[0]].get('1h')
+    if hourly_df is not None and len(hourly_df) > 0:
+        profile = compute_hourly_volatility_profile(hourly_df)
+        profile_path = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'datasets', 'hourly_volatility_profile.json')
+        save_profile(profile, profile_path)
+        logger.info(f"Stuendliches Volatilitaets-Profil gespeichert: {profile_path}")
+    else:
+        logger.warning("Kein '1h'-Timeframe im Training gefunden -- stuendliches "
+                        "Volatilitaets-Profil wird NICHT aktualisiert.")
 
     X_train_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in train_examples])
     X_val_flat = np.stack([flat_features(ex, scaler, timeframes) for ex in val_examples])

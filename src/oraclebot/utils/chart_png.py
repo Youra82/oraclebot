@@ -41,18 +41,47 @@ def _draw_predicted_candle(ax, x: int, o: float, h: float, l: float, c: float, w
            alpha=BODY_ALPHA, edgecolor=color, linewidth=1, linestyle='dashed', zorder=3)
 
 
+def _draw_hourly_volatility_panel(ax, hourly_profile: dict, predicted_range: float):
+    """Historisches stuendliches Volatilitaets-Profil (siehe analysis/hourly_volatility.py),
+    skaliert auf die heute vorhergesagte Tages-Range -- KEINE Pfad-Vorhersage, nur die
+    historisch typische Groessenordnung pro Stunde. Fehlerbalken = Tag-zu-Tag-Streuung in der
+    Historie: schmal = verlaesslicheres Muster, breit = mit Vorsicht zu geniessen. Bewusst
+    keine einzelne "Konfidenz"-Kennzahl (ein erster Versuch mit 1/(1+Variationskoeffizient)
+    unterschied kaum zwischen den Stunden und taeuschte Praezision vor, die die Streuung nicht
+    hergibt -- die Fehlerbalken selbst sind die ehrlichere Darstellung)."""
+    hours = sorted(hourly_profile.keys())
+    means = [hourly_profile[h]['mean'] * predicted_range for h in hours]
+    stds = [hourly_profile[h]['std'] * predicted_range for h in hours]
+
+    ax.bar(hours, means, color='#5b8def', alpha=0.7, width=0.7)
+    ax.errorbar(hours, means, yerr=stds, fmt='none', ecolor='#333333', alpha=0.4, capsize=2)
+    ax.set_xlabel('Stunde (UTC)')
+    ax.set_ylabel('USDT')
+    ax.set_title('Historisches stuendliches Volatilitaets-Profil (skaliert, Fehlerbalken = Streuung)', fontsize=9)
+    ax.set_xticks(range(0, 24, 2))
+    ax.grid(alpha=0.2)
+
+
 def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float, trend: int, range_cat: int,
                            close_position_cat: int, upper_wick_cat: int, lower_wick_cat: int,
-                           target_date, save_path: str, n_recent: int = 30):
+                           target_date, save_path: str, n_recent: int = 30, hourly_profile: dict = None):
     """Baut ein kompaktes PNG: die letzten `n_recent` echten Tageskerzen + die vorhergesagte
     Kerze (gestrichelt). Body (trend+range, verlaesslicher) in normaler Deckkraft, Dochte
     (upper_wick/lower_wick/close_position, schwaecher validiert) deutlich transparenter --
     siehe reconstruct_candle()-Docstring fuer die Begruendung der unterschiedlichen
-    Verlaesslichkeit."""
+    Verlaesslichkeit.
+
+    `hourly_profile` (optional, von hourly_volatility.load_profile()): wenn angegeben, wird ein
+    zweites Panel darunter angehaengt (siehe _draw_hourly_volatility_panel())."""
     recent = daily_df.iloc[-n_recent:]
     pred = reconstruct_candle(prev_close, atr, trend, range_cat, close_position_cat, upper_wick_cat, lower_wick_cat)
 
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=120)
+    if hourly_profile:
+        fig, (ax, ax_hourly) = plt.subplots(
+            2, 1, figsize=(9, 6.5), dpi=120, gridspec_kw={'height_ratios': [3, 1]})
+    else:
+        fig, ax = plt.subplots(figsize=(9, 5), dpi=120)
+
     for i, (_, row) in enumerate(recent.iterrows()):
         _draw_candle(ax, i, row['open'], row['high'], row['low'], row['close'])
 
@@ -73,6 +102,11 @@ def plot_prediction_chart(daily_df: pd.DataFrame, prev_close: float, atr: float,
     ax.set_title(f"BTC/USDT -- Prognose {target_date.strftime('%Y-%m-%d')}: {trend_label} (gestrichelt)")
     ax.set_ylabel("USDT")
     ax.grid(alpha=0.2)
+
+    if hourly_profile:
+        predicted_range = pred['high'] - pred['low']
+        _draw_hourly_volatility_panel(ax_hourly, hourly_profile, predicted_range)
+
     fig.tight_layout()
     fig.savefig(save_path)
     plt.close(fig)

@@ -16,6 +16,7 @@ import pandas as pd
 import ta
 import torch
 
+from oraclebot.analysis.hourly_volatility import load_profile
 from oraclebot.data.features import FEATURE_NAMES, compute_features
 from oraclebot.data.scaler import FeatureScaler
 from oraclebot.data.targets import (CLOSE_POS_LABELS, GAP_LABELS, HIGH_FIRST_LABELS,
@@ -349,9 +350,11 @@ if __name__ == '__main__':
             chart_dir = os.path.join(os.path.dirname(__file__), '..', 'artifacts', 'charts')
             os.makedirs(chart_dir, exist_ok=True)
             chart_path = os.path.join(chart_dir, 'telegram_latest.png')
+            hourly_profile_path = os.path.join(artifacts_dir, 'hourly_volatility_profile.json')
+            hourly_profile = load_profile(hourly_profile_path) if os.path.exists(hourly_profile_path) else None
             plot_prediction_chart(daily_df, prev_close, atr_value, prediction['trend'], prediction['range'],
                                    prediction['close_position'], prediction['upper_wick'], prediction['lower_wick'],
-                                   target_date, chart_path)
+                                   target_date, chart_path, hourly_profile=hourly_profile)
             send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=message)
         else:
             send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
