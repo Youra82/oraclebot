@@ -8,11 +8,19 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="python"
-if ! command -v "$PYTHON" >/dev/null 2>&1; then
+# Muss das Projekt-.venv nutzen (nicht das System-Python vom PATH) -- dort sind pandas/torch/
+# sklearn etc. installiert. System-Python fuehrte zu "ModuleNotFoundError: No module named
+# 'pandas'" auf dem VPS (2026-07-16), da show_results.sh als einziges Skript nicht wie
+# update.sh/run_tests.sh explizit .venv/bin/python3 nutzte.
+if [ -x "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+elif command -v python >/dev/null 2>&1; then
+    echo -e "${YELLOW}WARNUNG: .venv nicht gefunden, verwende System-Python -- bitte install.sh ausfuehren.${NC}"
+    PYTHON="python"
+elif command -v python3 >/dev/null 2>&1; then
+    echo -e "${YELLOW}WARNUNG: .venv nicht gefunden, verwende System-Python -- bitte install.sh ausfuehren.${NC}"
     PYTHON="python3"
-fi
-if ! command -v "$PYTHON" >/dev/null 2>&1; then
+else
     echo -e "${RED}FEHLER: Python nicht gefunden.${NC}"
     exit 1
 fi
