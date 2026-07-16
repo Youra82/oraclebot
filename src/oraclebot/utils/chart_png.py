@@ -65,33 +65,45 @@ def _draw_po3_levels(ax, recent: pd.DataFrame, n_candles: int = 3):
     ax.legend(handles=[body_handle, wick_handle], loc='upper left', fontsize=7, framealpha=0.7)
 
 
+HOURLY_VOL_COLOR = '#5b8def'
+
+
+def _draw_hourly_volatility_candle(ax, x: int, anchor: float, mean_move: float, std_move: float,
+                                    width: float = 0.6, color: str = HOURLY_VOL_COLOR):
+    """Synthetische 'Kerze' fuer eine Stunde, im selben visuellen Stil wie die echten Kerzen
+    oben: Body = typische Bewegungsgroesse um den Anker (BODY_ALPHA), Docht = zusaetzliche
+    Tag-zu-Tag-Streuung in der Historie (WICK_ALPHA, wie beim Rest des Charts: schwaecher
+    validiert/unsicherer -> transparenter). Neutrale Einheitsfarbe statt rot/gruen -- wir haben
+    keine Richtungsinformation pro Stunde, nur eine Betragsgroesse."""
+    body_bottom, body_top = anchor - mean_move / 2, anchor + mean_move / 2
+    wick_low, wick_high = body_bottom - std_move, body_top + std_move
+    ax.plot([x, x], [wick_low, wick_high], color=color, linewidth=1, alpha=WICK_ALPHA, zorder=2)
+    ax.bar(x, body_top - body_bottom, bottom=body_bottom, width=width, color=color,
+           alpha=BODY_ALPHA, edgecolor=color, linewidth=1, zorder=3)
+
+
 def _draw_hourly_volatility_panel(ax, hourly_profile: dict, predicted_range: float, anchor_price: float):
     """Historisches stuendliches Volatilitaets-Profil (siehe analysis/hourly_volatility.py),
     skaliert auf die heute vorhergesagte Tages-Range -- KEINE Pfad-Vorhersage, nur die
     historisch typische Groessenordnung pro Stunde. Auf ABSOLUTER Preisskala um `anchor_price`
     (Kerzen-Open) dargestellt -- direkt vergleichbar mit dem Hauptchart, statt einer
     abstrakten "Bewegungsgroesse ab 0" (verwirrte 2026-07-16: Skala passte optisch nicht zum
-    Chart darueber). Jede Stunde zeigt unabhaengig ein Band um denselben Anker, NICHT einen
-    kumulativen Pfad -- wir haben kein Modell dafuer, wo der Preis zu Beginn jeder Stunde
-    stehen wuerde, nur wie viel sich in einer *einzelnen* Stunde historisch typischerweise
-    bewegt.
-
-    Fehlerbalken = Tag-zu-Tag-Streuung in der Historie: schmal = verlaesslicheres Muster, breit
-    = mit Vorsicht zu geniessen. Bewusst keine einzelne "Konfidenz"-Kennzahl (ein erster Versuch
-    mit 1/(1+Variationskoeffizient) unterschied kaum zwischen den Stunden und taeuschte
-    Praezision vor, die die Streuung nicht hergibt)."""
+    Chart darueber). Jede Stunde zeigt unabhaengig eine synthetische Kerze um denselben Anker,
+    NICHT einen kumulativen Pfad -- wir haben kein Modell dafuer, wo der Preis zu Beginn jeder
+    Stunde stehen wuerde, nur wie viel sich in einer *einzelnen* Stunde historisch typischerweise
+    bewegt (Body) und wie stark das von Tag zu Tag streut (Docht). Bewusst keine einzelne
+    "Konfidenz"-Kennzahl (ein erster Versuch mit 1/(1+Variationskoeffizient) unterschied kaum
+    zwischen den Stunden und taeuschte Praezision vor, die die Streuung nicht hergibt)."""
     hours = sorted(hourly_profile.keys())
-    means = [hourly_profile[h]['mean'] * predicted_range for h in hours]
-    stds = [hourly_profile[h]['std'] * predicted_range for h in hours]
-    band_bottom = [anchor_price - m / 2 for m in means]
-    band_height = means
+    for h in hours:
+        mean_move = hourly_profile[h]['mean'] * predicted_range
+        std_move = hourly_profile[h]['std'] * predicted_range
+        _draw_hourly_volatility_candle(ax, h, anchor_price, mean_move, std_move)
 
-    ax.bar(hours, band_height, bottom=band_bottom, color='#5b8def', alpha=0.7, width=0.7)
-    ax.errorbar(hours, [anchor_price] * len(hours), yerr=stds, fmt='none', ecolor='#333333', alpha=0.4, capsize=2)
     ax.axhline(anchor_price, color='#333333', linestyle='-', linewidth=1, alpha=0.6)
     ax.set_xlabel('Stunde (UTC)')
     ax.set_ylabel('USDT')
-    ax.set_title('Historisches stuendliches Volatilitaets-Band um den Kerzen-Open (Fehlerbalken = Streuung)', fontsize=9)
+    ax.set_title('Historisches stuendliches Volatilitaets-Profil um den Kerzen-Open (Docht = Streuung)', fontsize=9)
     ax.set_xticks(range(0, 24, 2))
     ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
     ax.grid(alpha=0.2)
