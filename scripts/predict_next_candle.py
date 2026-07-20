@@ -312,6 +312,8 @@ if __name__ == '__main__':
         min_trend_confidence=strat_cfg.get('min_trend_confidence', 0.40),
         sl_range_fraction=strat_cfg.get('sl_range_fraction', 0.5),
         risk_reward=strat_cfg.get('risk_reward', 2.0),
+        manual_sl_pct=strat_cfg.get('manual_sl_pct'),
+        manual_tp_pct=strat_cfg.get('manual_tp_pct'),
     )
 
     logger.info(f"\nHandelssignal (Trend-Konfidenz={signal['confidence']:.1%}):")

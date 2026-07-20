@@ -76,10 +76,12 @@
         "min_trend_confidence": 0.35,
         "sl_range_fraction": 0.5,
         "risk_reward": 1.5,
-        "risk_per_trade_pct": 1.0,
+        "risk_per_trade_pct": 2.0,
         "leverage": 5,
         "margin_mode": "isolated",
-        "live_trading_enabled": false
+        "live_trading_enabled": false,
+        "manual_sl_pct": null,
+        "manual_tp_pct": null
     },
     "notification_settings": {
         "telegram_enabled": true,

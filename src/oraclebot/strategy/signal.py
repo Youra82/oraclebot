@@ -14,7 +14,9 @@ from oraclebot.model.reconstruct import RANGE_BUCKET_VALUES
 def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
                           min_trend_confidence: float = 0.40,
                           sl_range_fraction: float = 0.5,
-                          risk_reward: float = 2.0) -> dict:
+                          risk_reward: float = 2.0,
+                          manual_sl_pct: float = None,
+                          manual_tp_pct: float = None) -> dict:
     """Berechnet Richtung, Entry, Stop-Loss und Take-Profit aus einer Modell-Vorhersage.
 
     Args:
@@ -26,12 +28,21 @@ def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
             (Baseline bei 2 Klassen ist 50% -- ein sinnvoller Schwellwert liegt darueber).
         sl_range_fraction: SL-Abstand = sl_range_fraction * range_atr_multiple * ATR.
             0.5 heisst: SL liegt bei der Haelfte der vom Modell erwarteten Tagesrange.
-        risk_reward: TP-Abstand = risk_reward * SL-Abstand.
+            Wird ignoriert, wenn manual_sl_pct gesetzt ist.
+        risk_reward: TP-Abstand = risk_reward * SL-Abstand. Wird ignoriert, wenn
+            manual_tp_pct gesetzt ist.
+        manual_sl_pct: wenn gesetzt (zusammen mit manual_tp_pct), ersetzt SL/TP-Abstand
+            komplett durch feste Prozentsaetze vom Entry-Preis (settings.json
+            strategy_settings.manual_sl_pct/manual_tp_pct) statt der Modell-Berechnung.
+            2.0 heisst: SL 2% vom Entry entfernt -- reine Preis-Prozent-Angabe, der Hebel
+            wird hier NICHT einberechnet (der wirkt erst auf die Positionsgroesse/Margin,
+            nicht auf den Preisabstand).
+        manual_tp_pct: analog zu manual_sl_pct fuer den Take-Profit.
 
     Returns:
         dict mit 'direction' ('long'/'short'/None -- None heisst kein Trade), 'entry',
         'stop_loss', 'take_profit', 'sl_distance', 'tp_distance', 'confidence',
-        'range_atr_multiple', 'reason' (nur gesetzt wenn kein Trade).
+        'range_atr_multiple' (None im manuellen Modus), 'reason' (nur gesetzt wenn kein Trade).
     """
     trend = prediction['trend']
     confidence = prediction['step_probabilities']['trend']
@@ -39,9 +50,14 @@ def compute_trade_signal(prediction: dict, prev_close: float, atr: float,
     if confidence < min_trend_confidence:
         return {'direction': None, 'reason': 'low_confidence', 'confidence': confidence}
 
-    range_atr_multiple = RANGE_BUCKET_VALUES[prediction['range']]
-    sl_distance = sl_range_fraction * range_atr_multiple * atr
-    tp_distance = risk_reward * sl_distance
+    if manual_sl_pct is not None and manual_tp_pct is not None:
+        range_atr_multiple = None
+        sl_distance = prev_close * manual_sl_pct / 100.0
+        tp_distance = prev_close * manual_tp_pct / 100.0
+    else:
+        range_atr_multiple = RANGE_BUCKET_VALUES[prediction['range']]
+        sl_distance = sl_range_fraction * range_atr_multiple * atr
+        tp_distance = risk_reward * sl_distance
 
     direction = 'long' if trend == 1 else 'short'
     entry = prev_close

@@ -162,7 +162,9 @@ def run_signal_backtest(examples: list, model, scaler, ohlcv_by_symbol: dict, ti
             pred['prediction'], prev_close=pred['prev_close'], atr=pred['atr'],
             min_trend_confidence=strategy_cfg.get('min_trend_confidence', 0.40),
             sl_range_fraction=strategy_cfg.get('sl_range_fraction', 0.5),
-            risk_reward=strategy_cfg.get('risk_reward', 2.0))
+            risk_reward=strategy_cfg.get('risk_reward', 2.0),
+            manual_sl_pct=strategy_cfg.get('manual_sl_pct'),
+            manual_tp_pct=strategy_cfg.get('manual_tp_pct'))
 
         if signal['direction'] is None:
             skipped_no_trade += 1

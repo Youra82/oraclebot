@@ -50,3 +50,35 @@ def test_position_size_scales_inversely_with_sl_distance():
 def test_position_size_zero_when_sl_equals_entry():
     size = compute_position_size(balance=1000.0, risk_per_trade_pct=1.0, entry=100.0, stop_loss=100.0)
     assert size == 0.0
+
+
+def test_manual_sl_tp_overrides_model_derived_distances():
+    """range_cat und atr sollen komplett ignoriert werden, wenn manual_sl_pct/manual_tp_pct
+    gesetzt sind -- reiner Prozentsatz vom Entry-Preis, unabhaengig vom Hebel."""
+    signal = compute_trade_signal(make_prediction(trend=1, range_cat=3), prev_close=100.0, atr=999.0,
+                                   manual_sl_pct=2.0, manual_tp_pct=5.0)
+    assert signal['sl_distance'] == 2.0  # 2% von 100
+    assert signal['tp_distance'] == 5.0  # 5% von 100
+    assert signal['range_atr_multiple'] is None
+
+
+def test_manual_sl_tp_ordering_long_and_short():
+    long_signal = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0,
+                                        manual_sl_pct=2.0, manual_tp_pct=5.0)
+    assert long_signal['stop_loss'] == 98.0
+    assert long_signal['take_profit'] == 105.0
+
+    short_signal = compute_trade_signal(make_prediction(trend=0), prev_close=100.0, atr=2.0,
+                                         manual_sl_pct=2.0, manual_tp_pct=5.0)
+    assert short_signal['stop_loss'] == 102.0
+    assert short_signal['take_profit'] == 95.0
+
+
+def test_manual_sl_tp_requires_both_values_set():
+    """Nur manual_sl_pct ODER nur manual_tp_pct gesetzt (nicht beide) -> faellt zurueck auf die
+    Modell-Berechnung, statt inkonsistent nur eines der beiden manuell zu setzen."""
+    only_sl = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0, manual_sl_pct=2.0)
+    assert only_sl['range_atr_multiple'] is not None
+
+    only_tp = compute_trade_signal(make_prediction(trend=1), prev_close=100.0, atr=2.0, manual_tp_pct=5.0)
+    assert only_tp['range_atr_multiple'] is not None
