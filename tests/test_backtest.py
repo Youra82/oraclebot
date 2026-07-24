@@ -137,7 +137,8 @@ def test_run_signal_backtest_produces_valid_stats():
 
     strategy_cfg = {'min_trend_confidence': 0.0, 'sl_range_fraction': 0.5, 'risk_reward': 2.0,
                      'risk_per_trade_pct': 1.0, 'beam_width': 3}
-    result = run_signal_backtest(examples, model, scaler, ohlcv_by_symbol, TIMEFRAMES, strategy_cfg)
+    result = run_signal_backtest(examples, model, scaler, ohlcv_by_symbol, TIMEFRAMES, strategy_cfg,
+                                  intraday_timeframe='4h')
 
     assert result['trades_count'] + result['skipped_no_trade'] == len(examples)
     assert 0.0 <= result['win_rate'] <= 100.0
@@ -154,7 +155,8 @@ def test_run_signal_backtest_zero_confidence_threshold_never_skips_any_trade():
     # min_trend_confidence=0 -> bei binaerem trend (kein Neutral-Bucket mehr) wird nie uebersprungen
     strategy_cfg = {'min_trend_confidence': 0.0, 'sl_range_fraction': 0.5, 'risk_reward': 2.0,
                      'risk_per_trade_pct': 1.0, 'beam_width': 3}
-    result = run_signal_backtest(examples, model, scaler, ohlcv_by_symbol, TIMEFRAMES, strategy_cfg)
+    result = run_signal_backtest(examples, model, scaler, ohlcv_by_symbol, TIMEFRAMES, strategy_cfg,
+                                  intraday_timeframe='4h')
     assert result['skipped_no_trade'] == 0
     for t in result['trades']:
         assert t['direction'] in ('long', 'short')

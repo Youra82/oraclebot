@@ -90,11 +90,19 @@ def predict_for_examples(examples: list, model, scaler, ohlcv_by_symbol: dict, t
 
 
 def determine_trade_outcome(signal: dict, day_bars: pd.DataFrame) -> dict:
-    """Prueft anhand echter Intraday-Kerzen (z.B. 4h) INNERHALB des Ziel-Tages, ob SL oder TP
+    """Prueft anhand echter Intraday-Kerzen (Standard: 15m) INNERHALB des Ziel-Tages, ob SL oder TP
 
     zuerst getroffen wurde -- chronologisch, nicht nur "beides waere getroffen worden".
     Werden weder SL noch TP getroffen, wird am Tagesende zum letzten verfuegbaren Schlusskurs
     glattgestellt ('timeout').
+
+    Granularitaets-Test (2026-07-24, SL=TP=1%%/Hebel=100x/BTC): mit 4h-Kerzen kam es in seltenen
+    Faellen (2 von 95 Trades) vor, dass SL UND TP in derselben Kerze lagen -- die konservative
+    "SL zuerst"-Annahme unterschaetzte das echte PnL dadurch leicht (89.9% bei 15m-Aufloesung vs.
+    82.4% bei 4h). Bei volatileren Symbolen (SOL/DOGE) war der Effekt deutlich groesser. Mit 15m
+    verschwindet die Mehrdeutigkeit fast vollstaendig (0 Faelle im selben Test) -- deutlich naeher
+    an der echten Reihenfolge, ohne die Vorteile *systematisch* zu ueberschaetzen (das waere die
+    "TP zuerst"-Annahme, die stattdessen immer die guenstigere Reihenfolge unterstellt).
 
     Args:
         signal: Rueckgabe von compute_trade_signal() (braucht 'direction' != None).
@@ -132,7 +140,7 @@ def _make_outcome(result: str, exit_price: float, signal: dict) -> dict:
 
 
 def run_signal_backtest(examples: list, model, scaler, ohlcv_by_symbol: dict, timeframes: list,
-                         strategy_cfg: dict, intraday_timeframe: str = '4h',
+                         strategy_cfg: dict, intraday_timeframe: str = '15m',
                          atr_window: int = 14, start_capital: float = 100.0,
                          device=None, tree_ensemble=None) -> dict:
     """Walk-Forward-Backtest: fuer jedes Beispiel Vorhersage -> Signal -> echtes Ergebnis pruefen.
