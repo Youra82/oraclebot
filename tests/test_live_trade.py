@@ -1,3 +1,5 @@
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 from oraclebot.strategy.live_trade import execute_live_trade
@@ -29,6 +31,16 @@ def test_skips_when_position_already_open(mock_send):
     result = execute_live_trade(exchange, LONG_SIGNAL, SYMBOL, STRAT_CFG, TELEGRAM_CFG)
     assert result == {'action': 'skipped', 'reason': 'position_open'}
     exchange.place_market_order.assert_not_called()
+    exchange.cancel_all_orders_for_symbol.assert_not_called()
+
+
+@patch('oraclebot.strategy.live_trade.send_message')
+def test_cancels_leftover_trigger_orders_when_no_position_open(mock_send):
+    # Kein offene Position -> ein evtl. nicht ausgeloester SL/TP-Trigger der letzten,
+    # bereits geschlossenen Position muss aufgeraeumt werden, bevor irgendetwas anderes passiert.
+    exchange = make_exchange(open_positions=[])
+    execute_live_trade(exchange, LONG_SIGNAL, SYMBOL, STRAT_CFG, TELEGRAM_CFG)
+    exchange.cancel_all_orders_for_symbol.assert_called_once_with(SYMBOL)
 
 
 @patch('oraclebot.strategy.live_trade.send_message')
@@ -148,3 +160,53 @@ def test_tp_failure_still_counts_as_entered_since_sl_protects_position(mock_send
 
     assert result['action'] == 'entered'
     exchange.close_position.assert_not_called()
+
+
+# --- Anti-Martingale-Integration ---
+
+ANTI_MARTINGALE_CFG = dict(STRAT_CFG, anti_martingale_enabled=True, anti_martingale_base_pct=10.0,
+                            anti_martingale_growth_factor=2.0, anti_martingale_streak_target=3)
+
+
+@patch('oraclebot.strategy.live_trade.send_message')
+def test_anti_martingale_sizes_position_from_stake_pct_not_risk(mock_send, tmp_path):
+    state_path = os.path.join(tmp_path, 'state.json')
+    exchange = make_exchange(balance=1000.0)  # 10% Einsatz -> 100 USDT Margin * 5x Hebel / 60000 Entry
+
+    execute_live_trade(exchange, LONG_SIGNAL, SYMBOL, ANTI_MARTINGALE_CFG, TELEGRAM_CFG, state_path=state_path)
+
+    expected_contracts = (1000.0 * 0.10 * 5) / 60000.0
+    placed_amount = exchange.place_market_order.call_args[0][2]
+    assert abs(placed_amount - expected_contracts) < 1e-9
+
+
+@patch('oraclebot.strategy.live_trade.send_message')
+def test_anti_martingale_records_pending_position_after_entry(mock_send, tmp_path):
+    state_path = os.path.join(tmp_path, 'state.json')
+    exchange = make_exchange(balance=1000.0)
+
+    execute_live_trade(exchange, LONG_SIGNAL, SYMBOL, ANTI_MARTINGALE_CFG, TELEGRAM_CFG, state_path=state_path)
+
+    with open(state_path) as f:
+        state = json.load(f)
+    assert state['pending_position'] is not None
+    assert state['pending_position']['balance_before'] == 1000.0
+
+
+@patch('oraclebot.strategy.live_trade.send_message')
+def test_anti_martingale_resolves_win_and_doubles_stake_before_next_entry(mock_send, tmp_path):
+    state_path = os.path.join(tmp_path, 'state.json')
+    with open(state_path, 'w') as f:
+        json.dump({'stake_pct': 10.0, 'consecutive_wins': 0,
+                    'pending_position': {'balance_before': 1000.0, 'expected_win_balance': 1100.0,
+                                          'expected_loss_balance': 900.0}}, f)
+
+    # Kein offener Position mehr gefunden -> die vorherige ist geschlossen; Guthaben liegt naeher
+    # an der Gewinn- als an der Verlust-Erwartung -> als Gewinn gewertet, Einsatz verdoppelt.
+    exchange = make_exchange(balance=1100.0, open_positions=[])
+
+    execute_live_trade(exchange, LONG_SIGNAL, SYMBOL, ANTI_MARTINGALE_CFG, TELEGRAM_CFG, state_path=state_path)
+
+    expected_contracts = (1100.0 * 0.20 * 5) / 60000.0  # 20% = verdoppelter Einsatz nach dem Gewinn
+    placed_amount = exchange.place_market_order.call_args[0][2]
+    assert abs(placed_amount - expected_contracts) < 1e-9

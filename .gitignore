@@ -37,3 +37,7 @@ artifacts/datasets/gdelt_bitcoin_tone_daily.csv
 # Ephemerer Tages-Marker gegen Telegram-Doppelversand (siehe predict_next_candle.py):
 # haelt fest, fuer welchen UTC-Tag die Prognose schon gesendet wurde.
 artifacts/datasets/last_prediction_run.txt
+
+# Live-Zustand der Anti-Martingale-Positionsgroesse (siehe anti_martingale.py) -- rein
+# runtime-generiert, pro Account unterschiedlich, nicht fuer Git geeignet.
+artifacts/state/

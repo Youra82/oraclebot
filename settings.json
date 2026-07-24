@@ -77,11 +77,15 @@
         "sl_range_fraction": 0.5,
         "risk_reward": 1.5,
         "risk_per_trade_pct": 2.0,
-        "leverage": 5,
+        "leverage": 100,
         "margin_mode": "isolated",
-        "live_trading_enabled": false,
-        "manual_sl_pct": null,
-        "manual_tp_pct": null
+        "live_trading_enabled": true,
+        "manual_sl_pct": 1.0,
+        "manual_tp_pct": 1.0,
+        "anti_martingale_enabled": false,
+        "anti_martingale_base_pct": 7.25,
+        "anti_martingale_growth_factor": 2.0,
+        "anti_martingale_streak_target": 3
     },
     "notification_settings": {
         "telegram_enabled": true,

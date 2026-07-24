@@ -166,6 +166,27 @@ class Exchange:
             logger.error(f"Fehler bei Trigger Order: {e}", exc_info=True)
             raise
 
+    def cancel_all_orders_for_symbol(self, symbol: str):
+        """Storniert alle offenen Orders (normal + Trigger/Stop) fuer ein Symbol.
+
+        Wichtig nach jedem Positionsschluss: SL und TP werden als zwei UNABHAENGIGE
+        Trigger-Orders platziert (kein OCO-Verbund) -- greift eine davon, bleibt die andere
+        als Order-Leiche auf der Boerse stehen und koennte sonst faelschlich gegen eine
+        spaeter eroeffnete neue Position ausloesen (gefunden 2026-07-24 im Live-Test: nach
+        manuellem Schliessen der Test-Position blieben die SL/TP-Trigger sichtbar in Bitgets
+        Open-Orders-Liste stehen).
+        """
+        for stop_flag in (False, True):
+            try:
+                self.exchange.cancel_all_orders(symbol, params={'productType': 'USDT-FUTURES', 'stop': stop_flag})
+            except ccxt.ExchangeError as e:
+                if any(x in str(e) for x in ['Order not found', 'no order to cancel', '22001']):
+                    pass
+                else:
+                    logger.error(f"Fehler beim Stornieren von Orders (stop={stop_flag}) fuer {symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Fehler beim Stornieren von Orders fuer {symbol}: {e}")
+
     def close_position(self, symbol: str):
         """Schliesst eine offene Position sofort via Market Order (Sicherheits-Fallback,
         z.B. wenn nach einem gefuellten Entry der SL nicht platziert werden konnte --
