@@ -37,6 +37,15 @@ TREE_TARGETS = ['trend', 'range', 'close_position', 'upper_wick', 'lower_wick', 
 # deterministisch (0 Varianz ueber Seeds). Fuer die uebrigen Ziele nicht getestet -> dort bleibt RF.
 HISTGBM_TARGETS = {'trend'}
 
+# max_depth-Override je Ziel: Walk-Forward-Test (2026-07-24, 3 chronologische Testfenster auf
+# BTC/USDT:USDT) zeigte fuer 'trend' einen robusten Gewinn von depth=5 auf depth=3 -- besser
+# oder gleich gut in JEDEM der 3 Fenster (Mittel 56.2%->59.0%, Worst-Case 53.7%->56.0%), nicht
+# nur im Durchschnitt. Plausibel bei nur ~130-400 Trainingsbeispielen pro Fenster: tiefere
+# Baeume (depth=5+) neigen eher zum Auswendiglernen statt Verallgemeinern. Nur fuer 'trend'
+# getestet -- die uebrigen TREE_TARGETS bleiben bei self.max_depth (5), bis sie separat
+# validiert werden.
+TARGET_MAX_DEPTH = {'trend': 3}
+
 
 def flat_features(example: dict, scaler, timeframes: list) -> np.ndarray:
     """Letzte (aktuellste) Zeile jedes Timeframe-Fensters, skaliert, aneinandergehaengt --
@@ -66,14 +75,15 @@ class TreeEnsemblePredictor:
         X = np.stack([flat_features(ex, scaler, timeframes) for ex in examples])
         for target in TREE_TARGETS:
             y = np.array([ex['target'][target] for ex in examples])
+            depth = TARGET_MAX_DEPTH.get(target, self.max_depth)
             if target in HISTGBM_TARGETS:
                 model = HistGradientBoostingClassifier(
-                    max_depth=self.max_depth, max_iter=100,
+                    max_depth=depth, max_iter=100,
                     class_weight='balanced', random_state=self.random_state,
                 )
             else:
                 model = RandomForestClassifier(
-                    n_estimators=self.n_estimators, max_depth=self.max_depth,
+                    n_estimators=self.n_estimators, max_depth=depth,
                     class_weight='balanced', random_state=self.random_state,
                 )
             model.fit(X, y)
