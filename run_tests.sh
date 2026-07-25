@@ -28,23 +28,25 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo ""
     echo "--- Live-Smoke-Test: Gate+Marker End-to-End (echter Datenabruf/Modell/Telegram!) ---"
     echo "Nutzt eine EIGENE Marker-Datei (smoke_test_marker.txt), NICHT die echte Produktions-"
-    echo "Marker-Datei -- kann daher niemals den naechsten echten Mitternachts-Cronjob blockieren."
-    SMOKE_MARKER="artifacts/datasets/smoke_test_marker.txt"
+    echo "Marker-Datei -- kann daher niemals den naechsten echten 4h-Cronjob blockieren."
+    SMOKE_MARKER="artifacts/datasets/smoke_test_barrier_marker.txt"
     rm -f "$SMOKE_MARKER"
-    SIM_TIME="$(date -u +%Y-%m-%d) 00:05"
+    CURRENT_HOUR=$(date -u +%H)
+    BOUNDARY_HOUR=$(printf '%02d' $(( (10#$CURRENT_HOUR / 4) * 4 )))
+    SIM_TIME="$(date -u +%Y-%m-%d) ${BOUNDARY_HOUR}:05"
 
     echo ""
     echo "1. Lauf (sollte eine ECHTE Telegram-Nachricht senden, falls konfiguriert)..."
-    if ! python3 scripts/predict_next_candle.py --simulate-now "$SIM_TIME" --marker-path "$SMOKE_MARKER"; then
+    if ! python3 scripts/predict_next_barrier.py --simulate-now "$SIM_TIME" --marker-path "$SMOKE_MARKER"; then
         echo "Live-Smoke-Test 1. Lauf fehlgeschlagen."
         EXIT_CODE=1
     fi
 
     echo ""
     echo "2. Lauf, identischer simulierter Zeitpunkt (sollte uebersprungen werden, KEINE zweite Nachricht)..."
-    SMOKE_OUTPUT="$(python3 scripts/predict_next_candle.py --simulate-now "$SIM_TIME" --marker-path "$SMOKE_MARKER" 2>&1)"
+    SMOKE_OUTPUT="$(python3 scripts/predict_next_barrier.py --simulate-now "$SIM_TIME" --marker-path "$SMOKE_MARKER" 2>&1)"
     echo "$SMOKE_OUTPUT"
-    if echo "$SMOKE_OUTPUT" | grep -q "wurde bereits gesendet"; then
+    if echo "$SMOKE_OUTPUT" | grep -q "bereits verarbeitet"; then
         echo "2. Lauf korrekt uebersprungen -- Doppel-Versand-Schutz bestaetigt."
     else
         echo "FEHLER: 2. Lauf haette wegen des Markers uebersprungen werden muessen, ist es aber nicht."

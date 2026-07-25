@@ -11,15 +11,13 @@ logs/
 artifacts/charts/
 
 # Grosse Trainingsdaten/Caches (100MB+ pro Datei) -- nicht fuer Git geeignet.
-# market_transformer_best.pt + scaler_full.pkl bleiben getrackt (fuer VPS-Inferenz noetig).
+# barrier_model_*.pkl bleibt getrackt (klein, ~120KB, fuer VPS-Inferenz noetig -- kein
+# Neu-Training auf dem VPS erforderlich).
 artifacts/datasets/*.jsonl
 artifacts/datasets/ohlcv_*.pkl
-artifacts/datasets/tokenizer*.pkl
-artifacts/datasets/market_transformer.pt
 
-# Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant
-# (siehe artifacts/results/seed_reliability*.json fuer die ausgewerteten, aufbewahrten Studien).
-artifacts/datasets/training_diagnostics.json
+# Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant.
+artifacts/datasets/barrier_diagnostics_*.json
 
 # Exploratives Rohmaterial fuer verworfene externe-Datenquellen-Tests (2026-07-10: Funding
 # Rate, DXY, Fear&Greed -- keiner zeigte einen robusten Effekt, siehe Commit-Historie fuer die
@@ -34,9 +32,9 @@ artifacts/datasets/binance_futures_metrics_BTC_daily.csv
 artifacts/datasets/onchain_metrics_BTC_daily.csv
 artifacts/datasets/gdelt_bitcoin_tone_daily.csv
 
-# Ephemerer Tages-Marker gegen Telegram-Doppelversand (siehe predict_next_candle.py):
-# haelt fest, fuer welchen UTC-Tag die Prognose schon gesendet wurde.
-artifacts/datasets/last_prediction_run.txt
+# Ephemerer Perioden-Marker gegen Telegram-Doppelversand (siehe predict_next_barrier.py):
+# haelt fest, fuer welche 4h-Periode die Prognose schon gesendet wurde.
+artifacts/datasets/last_barrier_run.txt
 
 # Live-Zustand der Anti-Martingale-Positionsgroesse (siehe anti_martingale.py) -- rein
 # runtime-generiert, pro Account unterschiedlich, nicht fuer Git geeignet.

@@ -111,7 +111,7 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
 
 
 def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache_path: str) -> pd.DataFrame:
-    """Live-Cache fuer predict_next_candle.py: erster Lauf holt die volle benoetigte Historie
+    """Live-Cache fuer predict_next_barrier.py: erster Lauf holt die volle benoetigte Historie
     und speichert sie unter `cache_path` (gitignored, siehe artifacts/datasets/ohlcv_*.pkl in
     .gitignore); jeder weitere Lauf haengt nur die Kerzen seit dem letzten Cache-Stand an.
 
@@ -180,10 +180,10 @@ def fetch_all_timeframes(symbol: str, timeframes: list, history_days: int, cache
                           use_cache: bool = True) -> dict:
     """Laedt OHLCV fuer alle Timeframes eines Symbols, mit optionalem Datei-Cache.
 
-    Der volle 6-Timeframe-Fetch (v.a. 15m ueber hunderte Tage) dauert mehrere Minuten -- ein
-    Cache erspart das erneute Fetchen bei wiederholten Trainings-/Backtest-/Chart-Laeufen.
-    Wird sowohl von train_transformer.py als auch von den Backtest-/Chart-Scripts genutzt,
-    damit alle denselben Cache treffen.
+    Der volle Mehr-Timeframe-Fetch (v.a. 15m ueber hunderte Tage) dauert mehrere Minuten -- ein
+    Cache erspart das erneute Fetchen bei wiederholten Trainings-/Live-Laeufen. Wird sowohl von
+    train_barrier_model.py als auch von predict_next_barrier.py genutzt, damit beide denselben
+    Cache treffen.
     """
     ohlcv_by_timeframe = {}
     safe_symbol = symbol.replace('/', '_').replace(':', '_')

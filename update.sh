@@ -39,4 +39,4 @@ echo "7. Aktualisiere Python-Pakete..."
 .venv/bin/pip install -r requirements.txt --quiet
 
 echo "Update erfolgreich abgeschlossen. oraclebot ist jetzt auf dem neuesten Stand."
-echo "(market_transformer_best.pt / scaler_full.pkl / tree_ensemble.pkl sind git-getrackt und wurden mit aktualisiert -- kein Neu-Training auf dem VPS noetig.)"
+echo "(artifacts/datasets/barrier_model_*.pkl ist git-getrackt und wurde mit aktualisiert -- kein Neu-Training auf dem VPS noetig.)"
