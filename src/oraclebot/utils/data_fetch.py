@@ -144,7 +144,13 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
         logger.info(f"{symbol} {timeframe}: Cache-Stand bis {cached.index[-1]} ({len(cached)} Kerzen), "
                     f"hole inkrementell ab since={pd.Timestamp(since_ms, unit='ms', tz='UTC')} "
                     f"(bestaetigt die letzten {len(cached) - refresh_from_idx} gecachten Kerzen erneut)...")
-        fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50), since_ms=since_ms)
+        # Luecke dynamisch abdecken statt fixem limit: ein veralteter/lange nicht gelaufener
+        # Cache (z.B. nach Downtime) kann Tage hinter "jetzt" liegen -- bei feinen Timeframes
+        # (15m) sind das schnell >800 Kerzen. Ein zu kleines limit wuerde dann still nur einen
+        # Teil der Luecke schliessen und predict_next_barrier.py wuerde tagealte Kerzen als
+        # "aktuellste" behandeln, ohne dass das auffaellt (gefunden 2026-07-25).
+        gap_candles = int((exchange.milliseconds() - since_ms) / timeframe_ms) + 2
+        fresh = fetch_ohlcv(symbol, timeframe, limit=max(min_candles, 50, gap_candles), since_ms=since_ms)
         if len(fresh) == 0:
             logger.warning(f"{symbol} {timeframe}: inkrementeller Fetch lieferte NICHTS (since="
                            f"{pd.Timestamp(since_ms, unit='ms', tz='UTC')}), nutze reinen Cache-Stand "

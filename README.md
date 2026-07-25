@@ -4,7 +4,8 @@ Statt eine ganze Tageskerze vorherzusagen, beantwortet oraclebot direkt die Frag
 eine gehebelte Position mit symmetrischem Stop-Loss/Take-Profit tatsächlich zählt: **wird der
 Preis von hier aus zuerst +1% oder -1% erreichen?** Diese Frage wird für **jede 4h-Kerze**
 neu gestellt (nicht nur einmal täglich) — ein `HistGradientBoostingClassifier` auf den
-technischen Features der aktuellen 4h-Kerze sagt die Richtung vorher, eine
+technischen Features der aktuellen 4h-Kerze **plus dem jeweils aktuellsten Kontext aus fünf
+weiteren Zeitebenen** (1M/1w/1d/1h/15m) sagt die Richtung vorher, eine
 Anti-Martingale-Positionsgrößen-Logik verwaltet den Einsatz.
 
 > **Disclaimer:** Diese Software ist experimentell und dient ausschließlich Forschungszwecken.
@@ -20,10 +21,13 @@ Anti-Martingale-Positionsgrößen-Logik verwaltet den Einsatz.
 ## Grundidee
 
 ```
-4h-Kerze (OHLCV) ──► 19 kontinuierliche Features (Trend, Struktur, Momentum,
-                      Volumen, S/R-Distanz, Trendkanal, ...)
+4h-Referenzkerze ──► 21 kontinuierliche Features (Trend, Struktur, Momentum,
+  (OHLCV)             Volumen, S/R-Distanz, Trendkanal, ...)
                         │
-                        ▼
+1M/1w/1d/1h/15m ──► je Zeitebene dieselben 21 Features, jeweils die letzte VOR/BEI
+  (Kontext)           der Referenzkerze abgeschlossene Kerze (kein Lookahead)
+                        │
+                        ▼      (6 x 21 = 126 Features aneinandergehaengt)
        HistGradientBoostingClassifier (max_depth=3)
                         │
                         ▼
@@ -50,16 +54,20 @@ daraus SL/TP ab. Rückblickende Analyse (2026-07-24) zeigte: bei symmetrischem S
 ist die falsche Frage. Das direkte Barriere-Ziel, ausgewertet alle 4h statt einmal täglich,
 lieferte im Vergleich (identisches Symbol, identischer Testzeitraum, identisches SL/TP):
 
-| | Tages-Modell (verworfen) | 4h-Barriere-Modell (aktuell) |
-|---|---|---|
-| Trades im Testzeitraum | 95 | 696 |
-| Out-of-Sample-Winrate | 67.4% | 79.9% |
-| Walk-Forward (8 Fenster, 2.5 Jahre) | Mittel 59.0% / Worst-Case 56.0% | Mittel 67.5% / Worst-Case 62.0% |
+| | Tages-Modell (verworfen) | 4h-Barriere, nur 4h-Features (Zwischenstand) | 4h-Barriere + Multi-Timeframe-Kontext (aktuell) |
+|---|---|---|---|
+| Trades im Testzeitraum | 95 | 696 | 684 |
+| Out-of-Sample-Winrate | 67.4% | 79.9% | 80.6% |
+| Walk-Forward (7-8 Fenster, 2.5 Jahre) | Mittel 59.0% / Worst-Case 56.0% | Mittel 67.6% / Worst-Case 63.8% | Mittel 74.6% / Worst-Case 71.4% |
 
 Neun unabhängige Versuche, das alte Tages-Modell zu verbessern (Ensembles, Kalibrierung, mehr
 Historie, Regime-Filter, asymmetrische SL/TP, ...) blieben erfolglos, bevor die
 Barriere-Neuformulierung gefunden wurde — siehe Git-Historie für die Details der einzelnen
-Experimente.
+Experimente. Der Multi-Timeframe-Kontext (2026-07-25) wurde nachtraeglich ergaenzt, nachdem
+ein Walk-Forward-Vergleich (reine 4h-Features vs. 4h+1h+1d vs. alle 6 Zeitebenen) einen
+durchgaengigen Gewinn in jedem einzelnen Testfenster zeigte — anders als beim alten,
+deutlich kleineren Tages-Datensatz ist der Barriere-Datensatz (~5900 statt ~535 Beispiele)
+groß genug, dass zusätzliche Zeitebenen nicht bloß überanpassen.
 
 ---
 
@@ -77,8 +85,8 @@ oraclebot/
 │
 └── src/oraclebot/
     ├── data/
-    │   ├── features.py            # Kerze -> 19 Markt-Token-Features (kausal, kein Lookahead)
-    │   ├── barrier_targets.py     # Barriere-Zieldefinition + Trainingsbeispiel-Bau
+    │   ├── features.py            # Kerze -> 21 Markt-Token-Features (kausal, kein Lookahead)
+    │   ├── barrier_targets.py     # Barriere-Zieldefinition + Multi-Timeframe-Trainingsbeispiel-Bau
     │   ├── dataset.py             # JSON-Lines-Persistenz fuer Trainingsbeispiele
     │   └── scaler.py              # StandardScaler-Wrapper (Modell-Input-Normalisierung)
     │
@@ -110,14 +118,16 @@ artifacts/
 
 ### 1. Markt-Tokenisierung (`features.py`)
 
-Jede Kerze wird zu 19 kontinuierlichen Features (unverändert aus früheren Projektversionen,
-funktioniert timeframe-unabhängig):
+Jede Kerze wird zu 21 kontinuierlichen Features (unverändert aus früheren Projektversionen,
+funktioniert timeframe-unabhängig — dieselbe Funktion läuft für die Referenzkerze UND für
+jede Kontext-Zeitebene):
 
 | Feature | Bedeutung |
 |---|---|
 | `return`, `body`, `upper_wick`, `lower_wick` | Rohe Kerzengeometrie, normiert auf die Kerzenrange |
 | `atr_range`, `trend_state`, `momentum`, `velocity` | Volatilitäts-/Trend-/Momentum-Zustand (ATR/EMA/RSI-basiert) |
 | `structure` | Marktstruktur-Score (-2..+2) aus Swing-High/Low-Vergleich (HH/HL vs. LH/LL) |
+| `higher_tf_position` | Position relativ zur EMA einer groeberen Referenz (Distanz-Feature) |
 | `resistance_distance`, `support_distance` | Abstand zur nächsten Widerstands-/Unterstützungszone (geclusterte Swing-Punkte) |
 | `channel_position`, `channel_slope` | Position/Steigung im lokalen Trendkanal (Regression durch Swing-Highs/-Lows) |
 | `volume_ratio`, `macd_hist`, `gap` | Volumen relativ zum Schnitt, MACD-Momentum, Gap zum Vorkerzen-Close |
@@ -139,19 +149,27 @@ derselben 15m-Kerze): die untere (SL) gewinnt.
 BARRIER_LABELS = ['down_first', 'up_first']  # 0, 1
 ```
 
-`build_barrier_examples()` verknüpft Feature-Zeile und Label pro Referenzkerze zu einem
-flachen Trainingsbeispiel — anders als frühere Multi-Timeframe-Fenster-Ansätze reicht hier der
-Feature-Vektor der Referenzkerze selbst (ATR-/EMA-basierte Features verarbeiten Historie
-bereits intern).
+`build_barrier_examples()` verknüpft pro Referenzkerze den 21er-Feature-Block der 4h-Kerze mit
+je einem weiteren 21er-Block pro `context_timeframes`-Eintrag (Standard: `1M`, `1w`, `1d`,
+`1h`, `15m`) zu einem flachen 126er-Trainingsbeispiel. Jeder Kontext-Block ist die jeweils
+letzte VOR/BEI der Referenzkerze abgeschlossene Kerze dieser Zeitebene, angebunden per
+`pd.merge_asof(direction='backward')` — no-lookahead-korrekt, kein Blick in die Zukunft.
+Anders als frühere Multi-Timeframe-Fenster-Ansätze (Sequenz über mehrere Kerzen pro Zeitebene)
+reicht hier je Zeitebene nur die jeweils aktuellste Kerze, da ATR-/EMA-basierte Features
+Historie bereits intern verarbeiten. Beispiele, bei denen ein Kontext-Timeframe noch keine
+gültige Vorgänger-Kerze hat (früher Rand der Historie), werden übersprungen.
 
 ### 3. Modell (`barrier_model.py`)
 
-Ein einzelnes `HistGradientBoostingClassifier` (`max_depth=3`) auf den 19 Features der
-Referenzkerze. `max_depth=3` wurde per Walk-Forward-Test gegen 2/4/5/6 validiert (fast
-identische Genauigkeit über alle Tiefen, 3 als Mittelweg) — bei nur ~4-6 Tausend
-Trainingsbeispielen ist ein tieferer Baum kein verlässlicher Gewinn. Ein heterogenes Ensemble
-(HistGBM+RandomForest+LogReg) verbesserte in einem früheren Experiment die rohe Accuracy, aber
-NICHT das Handelsergebnis — deshalb bewusst bei einem einzelnen Modell belassen.
+Ein einzelnes `HistGradientBoostingClassifier` (`max_depth=3`) auf dem 126-dimensionalen
+Feature-Vektor (Referenzkerze + 5 Kontext-Zeitebenen). `max_depth=3` wurde per Walk-Forward-Test
+gegen 2/4/5/6 validiert (fast identische Genauigkeit über alle Tiefen, 3 als Mittelweg) — bei
+nur ~5-6 Tausend Trainingsbeispielen ist ein tieferer Baum kein verlässlicher Gewinn. Ein
+heterogenes Ensemble (HistGBM+RandomForest+LogReg) verbesserte in einem früheren Experiment die
+rohe Accuracy, aber NICHT das Handelsergebnis — deshalb bewusst bei einem einzelnen Modell
+belassen. Der Multi-Timeframe-Kontext selbst (mehr Zeitebenen statt ein größeres/komplexeres
+Modell) war der Hebel, der die Genauigkeit tatsächlich robust verbesserte (siehe Vergleichstabelle
+oben).
 
 ### 4. Handelssignal (`barrier_signal.py`)
 
@@ -186,7 +204,7 @@ andere sonst als Order-Leiche stehen).
 
 ```
 Referenzkerze: 2026-07-25 08:00:00+00:00 | Entry: 64030.00
-Vorhersage: down_first (Konfidenz: 65.7%)
+Vorhersage: down_first (Konfidenz: 68.9%)
 Signal: SHORT | SL: 64670.30 | TP: 63389.70
 ```
 
@@ -274,6 +292,7 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
         "symbol": "BTC/USDT:USDT",
         "reference_timeframe": "4h",
         "intraday_timeframe": "15m",
+        "context_timeframes": ["1M", "1w", "1d", "1h", "15m"],
         "barrier_pct": 1.0,
         "model_max_depth": 3,
         "min_confidence": 0.60,
@@ -281,14 +300,15 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": false,
-        "anti_martingale_base_pct": 6.62,
+        "anti_martingale_base_pct": 5.27,
         "anti_martingale_growth_factor": 2.0,
         "anti_martingale_streak_target": 3,
         "live_trading_enabled": false,
         "history_days": 1000,
         "val_split": 0.30,
         "num_threads": 12,
-        "feature_settings": { "atr_window": 14, "ema_window": 50, "...": "..." }
+        "feature_settings": { "atr_window": 14, "ema_window": 50, "...": "..." },
+        "feature_settings_by_timeframe": { "1M": { "ema_window": 6, "...": "..." }, "1w": { "ema_window": 12, "...": "..." } }
     },
     "notification_settings": {
         "telegram_enabled": true,
@@ -300,11 +320,13 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 | Parameter | Erklärung |
 |---|---|
 | `reference_timeframe` / `intraday_timeframe` | 4h für Signal-Entscheidungen, 15m für die Barriere-Reihenfolgen-Bestimmung. |
+| `context_timeframes` | Zusätzliche Zeitebenen, deren letzte abgeschlossene Kerze als weiterer Feature-Block angehängt wird (siehe [Barriere-Zielvariable](#2-barriere-zielvariable-barrier_targetspy)). Leer = nur 4h-Features (altes Verhalten). |
 | `barrier_pct` | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. |
 | `model_max_depth` | HistGBM-Baumtiefe. 3 validiert (siehe [Modell](#3-modell-barrier_modelpy)). |
-| `min_confidence` | 0.60 validiert (696 Trades, 79.9% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=6.62` haelt den MaxDD bei ~50% (mit den anderen Werten). |
+| `min_confidence` | 0.60 validiert (684 Trades, 80.6% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
+| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=5.27` haelt den MaxDD bei ~50% (mit den anderen Werten, rekalibriert 2026-07-25 für das Multi-Timeframe-Modell). |
 | `history_days` | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
+| `feature_settings_by_timeframe` | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
 | `live_trading_enabled` | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
 | `notification_settings.telegram_enabled` | Unabhängig von `live_trading_enabled` — Prognosen kommen auch bei deaktiviertem Live-Trading per Telegram an. |
 
@@ -330,7 +352,9 @@ cp secret.json.example secret.json && nano secret.json   # Telegram (optional)
 PYTHONPATH=src python scripts/train_barrier_model.py
 ```
 
-Lädt (gecachte) 4h+15m-OHLCV-Daten, baut die Barriere-Trainingsbeispiele, prüft die
+Lädt (gecachte) OHLCV-Daten für `reference_timeframe` + `intraday_timeframe` +
+`context_timeframes` (Standard: 4h, 15m, 1M, 1w, 1d, 1h), baut die Barriere-Trainingsbeispiele
+mit Multi-Timeframe-Kontext, prüft die
 Robustheit über 8 chronologische Walk-Forward-Fenster, trainiert das finale Modell auf dem
 offiziellen 70/30-Split, speichert:
 - `artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl` (**git-getrackt**, ~120KB)

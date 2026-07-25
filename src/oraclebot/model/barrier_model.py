@@ -1,8 +1,9 @@
 # src/oraclebot/model/barrier_model.py
 # Vorhersage-Modell fuer das Barriere-Ziel (barrier_targets.py): ein einzelnes
-# HistGradientBoostingClassifier (depth=3) auf den reinen Referenzkerzen-Features -- kein
-# Multi-Timeframe-Fenster wie beim Transformer/tree_ensemble.py noetig, da hier ausschliesslich
-# die aktuellste Kerze der gewaehlten Referenz-Zeitebene (Standard 4h) als Input dient.
+# HistGradientBoostingClassifier (depth=3) auf den Referenzkerzen-Features plus optionalen
+# Kontext-Timeframe-Bloecken (siehe build_barrier_examples). Kein Multi-Timeframe-FENSTER wie
+# beim alten Transformer/tree_ensemble.py noetig -- pro Timeframe reicht die jeweils aktuellste
+# Kerze, da ATR-/EMA-basierte Features Historie bereits intern verarbeiten.
 #
 # Architektur-Wahl (depth=3, HistGBM, kein Ensemble): direkt aus der Recherche vom 24.07.2026
 # uebernommen -- max_depth 2-6 lieferte fast identische Genauigkeit (66.0-66.9%), depth=3 als
@@ -14,8 +15,6 @@ import pickle
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
-
-from oraclebot.data.features import FEATURE_NAMES
 
 
 class BarrierPredictor:
@@ -30,7 +29,7 @@ class BarrierPredictor:
         self.scaler = None
 
     def fit(self, X: np.ndarray, y: np.ndarray, scaler) -> 'BarrierPredictor':
-        """X: unskalierte Feature-Matrix (n, len(FEATURE_NAMES)). scaler: bereits auf den
+        """X: unskalierte Feature-Matrix (n, n_features). scaler: bereits auf den
         Trainingsdaten gefitteter FeatureScaler (wird mitgespeichert, damit predict_proba/
         predict_one konsistent dieselbe Skalierung verwenden)."""
         self.scaler = scaler
@@ -47,9 +46,11 @@ class BarrierPredictor:
         return self.model.score(self.scaler.transform_array(X), y)
 
     def predict_one(self, feature_row) -> tuple:
-        """feature_row: Feature-Vektor (Laenge len(FEATURE_NAMES)) EINER Kerze, unskaliert.
-        Gibt (vorhergesagte_klasse, confidence) zurueck."""
-        x = np.array(feature_row, dtype=np.float32).reshape(1, len(FEATURE_NAMES))
+        """feature_row: kompletter Feature-Vektor EINES Beispiels (Referenz-Timeframe-Block +
+        alle Kontext-Timeframe-Bloecke, unskaliert, dieselbe Laenge wie beim Training). Gibt
+        (vorhergesagte_klasse, confidence) zurueck."""
+        arr = np.array(feature_row, dtype=np.float32)
+        x = arr.reshape(1, arr.shape[-1])
         proba = self.predict_proba(x)[0]
         cls = int(np.argmax(proba))
         return cls, float(proba[cls])

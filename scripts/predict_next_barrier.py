@@ -25,6 +25,10 @@ from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message
 
 TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
+# Genug Kerzen fuers laengste Feature-Warmup (EMA-50/MACD) je Timeframe. 1M/1w nutzen in
+# feature_settings_by_timeframe deutlich kleinere Fenster (siehe settings.json) -- 60 Kerzen
+# reichen dort, mehr gibt es bei 1M ueber Bitget ohnehin kaum (~50 Kerzen Gesamthistorie).
+MIN_CANDLES_BY_TF = {'1M': 60, '1w': 60, '1d': 120, '4h': 120, '1h': 120, '15m': 120}
 
 
 def _drop_incomplete_last_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -68,6 +72,7 @@ if __name__ == '__main__':
     symbol = barrier_cfg.get('symbol', 'BTC/USDT:USDT')
     reference_tf = barrier_cfg.get('reference_timeframe', '4h')
     intraday_tf = barrier_cfg.get('intraday_timeframe', '15m')
+    context_tfs = barrier_cfg.get('context_timeframes', [])
     barrier_pct = barrier_cfg.get('barrier_pct', 1.0)
     min_confidence = barrier_cfg.get('min_confidence', 0.60)
 
@@ -118,9 +123,42 @@ if __name__ == '__main__':
         sys.exit(1)
 
     from oraclebot.data.features import FEATURE_NAMES
-    last_row = feat[FEATURE_NAMES].iloc[-1]
-    entry_price = float(df.loc[feat.index[-1], 'close'])
-    predicted_class, confidence = predictor.predict_one(last_row.values)
+    ref_ts = feat.index[-1]
+    entry_price = float(df.loc[ref_ts, 'close'])
+    feature_row = feat.loc[ref_ts, FEATURE_NAMES].tolist()
+
+    # Kontext-Timeframes (siehe barrier_targets.build_barrier_examples): je Timeframe die letzte
+    # VOR/BEI der Referenzkerze abgeschlossene Kerze anhaengen -- entspricht live demselben
+    # merge_asof(direction='backward'), das beim Training verwendet wurde.
+    feature_kwargs_by_timeframe = barrier_cfg.get('feature_settings_by_timeframe', {})
+    for ctx_tf in context_tfs:
+        ctx_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{ctx_tf}.pkl")
+        ctx_min_candles = MIN_CANDLES_BY_TF.get(ctx_tf, 120)
+        logger.info(f"Lade Kontext-Timeframe {ctx_tf}...")
+        ctx_df = fetch_ohlcv_incremental(symbol, ctx_tf, min_candles=ctx_min_candles, cache_path=ctx_cache_path)
+        ctx_df = _drop_incomplete_last_candle(ctx_df, ctx_tf)
+        ctx_kwargs = {**barrier_cfg['feature_settings'], **feature_kwargs_by_timeframe.get(ctx_tf, {})}
+        ctx_feat = compute_features(ctx_df, **ctx_kwargs)
+        ctx_feat = ctx_feat[ctx_feat.index <= ref_ts]
+        if len(ctx_feat) == 0:
+            logger.error(f"Kontext-Timeframe {ctx_tf}: keine gueltige Kerze <= Referenzzeitpunkt {ref_ts}. Breche ab.")
+            sys.exit(1)
+        ctx_ts = ctx_feat.index[-1]
+        ctx_gap = ref_ts - ctx_ts
+        max_ctx_gap = pd.Timedelta(minutes=TIMEFRAME_MINUTES[ctx_tf]) * 2
+        if ctx_gap > max_ctx_gap and not args.force:
+            message = (f"ACHTUNG oraclebot (Barriere-Strategie): Kontext-Timeframe {ctx_tf} ist "
+                        f"{ctx_gap} hinter der Referenzkerze zurueck (Grenze: {max_ctx_gap}). "
+                        f"Moeglicher Fetch-/Cache-Fehler -- breche ab statt mit veraltetem Kontext zu handeln.")
+            logger.error(message)
+            secrets_early = load_secrets(os.path.join(os.path.dirname(__file__), '..', 'secret.json'))
+            telegram_early = secrets_early.get('telegram', {})
+            send_message(telegram_early.get('bot_token'), telegram_early.get('chat_id'), message)
+            sys.exit(1)
+        logger.info(f"  {ctx_tf}: letzte abgeschlossene Kerze <= Referenz: {ctx_ts}")
+        feature_row += ctx_feat.loc[ctx_ts, FEATURE_NAMES].tolist()
+
+    predicted_class, confidence = predictor.predict_one(feature_row)
     from oraclebot.data.barrier_targets import BARRIER_LABELS
     logger.info(f"\nReferenzkerze: {feat.index[-1]} | Entry: {entry_price:.2f}")
     logger.info(f"Vorhersage: {BARRIER_LABELS[predicted_class]} (Konfidenz: {confidence:.1%})")

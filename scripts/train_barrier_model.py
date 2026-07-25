@@ -67,16 +67,22 @@ if __name__ == '__main__':
     history_days = args.history_days or barrier_cfg['history_days']
     reference_tf = barrier_cfg.get('reference_timeframe', '4h')
     intraday_tf = barrier_cfg.get('intraday_timeframe', '15m')
+    context_tfs = barrier_cfg.get('context_timeframes', [])
     barrier_pct = barrier_cfg.get('barrier_pct', 1.0)
     max_depth = barrier_cfg.get('model_max_depth', 3)
     val_split = barrier_cfg['val_split']
 
-    logger.info(f"Lade {symbol}: Referenz={reference_tf}, Intraday={intraday_tf}, {history_days} Tage...")
-    ohlcv = fetch_all_timeframes(symbol, [reference_tf, intraday_tf], history_days,
+    all_tfs = sorted(set([reference_tf, intraday_tf] + context_tfs))
+    logger.info(f"Lade {symbol}: Referenz={reference_tf}, Intraday={intraday_tf}, "
+                f"Kontext={context_tfs}, {history_days} Tage...")
+    ohlcv = fetch_all_timeframes(symbol, all_tfs, history_days,
                                   cache_dir=ARTIFACTS_DIR, use_cache=not args.no_cache)
 
-    examples = build_barrier_examples(ohlcv[reference_tf], ohlcv[intraday_tf],
-                                       feature_kwargs=barrier_cfg['feature_settings'], barrier_pct=barrier_pct)
+    examples = build_barrier_examples(
+        ohlcv, reference_timeframe=reference_tf, intraday_timeframe=intraday_tf,
+        context_timeframes=context_tfs, feature_kwargs=barrier_cfg['feature_settings'],
+        feature_kwargs_by_timeframe=barrier_cfg.get('feature_settings_by_timeframe', {}),
+        barrier_pct=barrier_pct)
     logger.info(f"{len(examples)} Beispiele gebaut ({examples[0]['date']} bis {examples[-1]['date']})")
     if len(examples) < 50:
         raise RuntimeError(f"Nur {len(examples)} Beispiele -- zu wenig fuer ein sinnvolles Training.")
