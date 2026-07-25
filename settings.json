@@ -11,7 +11,7 @@
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": false,
-        "anti_martingale_base_pct": 5.27,
+        "anti_martingale_base_pct": 5.17,
         "anti_martingale_growth_factor": 2.0,
         "anti_martingale_streak_target": 3,
         "live_trading_enabled": false,

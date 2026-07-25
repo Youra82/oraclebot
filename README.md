@@ -324,7 +324,7 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 | `barrier_pct` | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. |
 | `model_max_depth` | HistGBM-Baumtiefe. 3 validiert (siehe [Modell](#3-modell-barrier_modelpy)). |
 | `min_confidence` | 0.60 validiert (684 Trades, 80.6% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=5.27` haelt den MaxDD bei ~50% (mit den anderen Werten, rekalibriert 2026-07-25 für das Multi-Timeframe-Modell). |
+| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=5.17` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, nicht nur den einen historisch realisierten Pfad) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-25). |
 | `history_days` | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
 | `feature_settings_by_timeframe` | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
 | `live_trading_enabled` | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
