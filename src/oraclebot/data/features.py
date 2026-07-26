@@ -1,8 +1,12 @@
 # src/oraclebot/data/features.py
 # Markt-Token: wandelt eine Kerze (+ Kontext) in den Feature-Vektor der "Marktsprache" um.
+import time
+
 import numpy as np
 import pandas as pd
 import ta
+
+from oraclebot.utils.progress import finish_progress, render_progress
 
 FEATURE_NAMES = [
     'return',          # (Close_t - Close_t-1) / Close_t-1
@@ -70,15 +74,25 @@ def _compute_swings(df: pd.DataFrame, swing_window: int = 5) -> tuple:
 
 
 def _market_structure_score(swing_highs: pd.DataFrame, swing_lows: pd.DataFrame, index: pd.Index,
-                             lookback: int = 20) -> pd.Series:
+                             lookback: int = 20, progress_label: str = None) -> pd.Series:
     """Swing-High/Low-basierter Trendstruktur-Score in {-2,-1,0,+1,+2}.
 
     Vergleich der letzten zwei Swing-Highs/-Lows in `lookback` Kerzen ergibt HH/HL bzw. LH/LL.
     Filterung ueber `confirmed_at <= ts` (nicht den eigenen Zeitstempel), siehe _compute_swings().
     """
     scores = pd.Series(0, index=index, dtype=float)
+    n = len(index)
+    # Pro-Kerze-Filterung (kein Vektorisieren moeglich, jede Kerze braucht ihr eigenes
+    # ruecklaufendes Fenster) -- bei grossen Kontext-Timeframes (15m: >90000 Kerzen) spuerbar
+    # langsam, deshalb gedrosselter Fortschrittsbalken wie in barrier_targets.py (Nutzer-Feedback
+    # 2026-07-26). Throttle skaliert mit n statt fixem Modulo, damit die Update-Rate bei jeder
+    # Groesse aehnlich "glatt" bleibt.
+    step = max(1, n // 200)
+    start_time = time.time()
 
     for i, ts in enumerate(index):
+        if progress_label and (i % step == 0 or i == n - 1):
+            render_progress(f"{progress_label} Marktstruktur", i + 1, n, start_time)
         window_start = index[max(0, i - lookback)]
         recent_highs = swing_highs[(swing_highs['confirmed_at'] >= window_start) & (swing_highs['confirmed_at'] <= ts)]
         recent_lows = swing_lows[(swing_lows['confirmed_at'] >= window_start) & (swing_lows['confirmed_at'] <= ts)]
@@ -99,6 +113,8 @@ def _market_structure_score(swing_highs: pd.DataFrame, swing_lows: pd.DataFrame,
         else:
             scores.iloc[i] = 0
 
+    if progress_label:
+        finish_progress()
     return scores
 
 
@@ -130,7 +146,7 @@ def _cluster_levels(prices: np.ndarray, tolerance: float) -> list:
 
 def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.DataFrame, swing_lows: pd.DataFrame,
                                atr: pd.Series, lookback: int = 20, zone_tolerance_atr: float = 0.5,
-                               no_level_atr: float = 3.0) -> tuple:
+                               no_level_atr: float = 3.0, progress_label: str = None) -> tuple:
     """Berechnet zwei klassische chart-technische Konzepte aus Swing-Highs/-Lows:
 
     1) Support-/Resistance-ZONEN (nahe Swing-Punkte werden geclustert statt als
@@ -148,8 +164,13 @@ def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.DataFrame, swing
     support = pd.Series(np.nan, index=df.index)
     channel_position = pd.Series(np.nan, index=df.index)
     channel_slope = pd.Series(np.nan, index=df.index)
+    n = len(df.index)
+    step = max(1, n // 200)
+    start_time = time.time()
 
     for i, ts in enumerate(df.index):
+        if progress_label and (i % step == 0 or i == n - 1):
+            render_progress(f"{progress_label} S/R+Kanal", i + 1, n, start_time)
         window_start = df.index[max(0, i - lookback)]
         # Filterung ueber confirmed_at (nicht den eigenen Swing-Zeitstempel), siehe _compute_swings().
         recent_highs = swing_highs[(swing_highs['confirmed_at'] >= window_start) & (swing_highs['confirmed_at'] <= ts)]
@@ -179,6 +200,8 @@ def _chart_technical_features(df: pd.DataFrame, swing_highs: pd.DataFrame, swing
             channel_position.iloc[i] = (c - lower_val) / channel_width if channel_width > 0 else 0.5
             channel_slope.iloc[i] = (upper_slope + lower_slope) / 2.0
 
+    if progress_label:
+        finish_progress()
     return resistance, support, channel_position, channel_slope, no_level_atr
 
 
@@ -204,7 +227,8 @@ def compute_features(df: pd.DataFrame, atr_window: int = 14, ema_window: int = 5
                       structure_swing_window: int = 5, structure_lookback: int = 20,
                       higher_tf_window: int = 20, rsi_window: int = 14,
                       macd_fast: int = 12, macd_slow: int = 26, macd_signal_window: int = 9,
-                      sr_lookback: int = 20, zone_tolerance_atr: float = 0.5) -> pd.DataFrame:
+                      sr_lookback: int = 20, zone_tolerance_atr: float = 0.5,
+                      progress_label: str = None) -> pd.DataFrame:
     """Berechnet den Markt-Token-Feature-Vektor für jede Kerze eines OHLCV-DataFrames.
 
     Args:
@@ -217,6 +241,9 @@ def compute_features(df: pd.DataFrame, atr_window: int = 14, ema_window: int = 5
             Support-/Resistance-Zone zusammengefasst (siehe _cluster_levels).
         sr_lookback: Fenster (Anzahl Kerzen), in dem nach Swing-Highs/-Lows fuer die
             Support/Resistance-Distanz gesucht wird.
+        progress_label: optionaler Praefix (z.B. Timeframe-Name) fuer die Fortschrittsbalken der
+            beiden teuren Pro-Kerze-Schleifen (Marktstruktur, S/R+Kanal). None = keine Anzeige
+            (Standard, z.B. fuer Tests oder kleine Aufrufe).
 
     Returns:
         DataFrame mit Spalten FEATURE_NAMES + 'regime' (NaN-Zeilen aus Warmup-Fenstern entfernt).
@@ -237,7 +264,7 @@ def compute_features(df: pd.DataFrame, atr_window: int = 14, ema_window: int = 5
     macd_hist = macd_ind.macd() - macd_ind.macd_signal()
     swing_highs, swing_lows = _compute_swings(df, structure_swing_window)
     resistance_dist, support_dist, channel_position, channel_slope, no_level_atr = _chart_technical_features(
-        df, swing_highs, swing_lows, atr, sr_lookback, zone_tolerance_atr)
+        df, swing_highs, swing_lows, atr, sr_lookback, zone_tolerance_atr, progress_label=progress_label)
     hl_range = (df['high'] - df['low']).replace(0, np.nan)
 
     out = pd.DataFrame(index=df.index)
@@ -247,7 +274,8 @@ def compute_features(df: pd.DataFrame, atr_window: int = 14, ema_window: int = 5
     out['lower_wick'] = (df[['open', 'close']].min(axis=1) - df['low']) / hl_range
     out['atr_range'] = hl_range / atr.replace(0, np.nan)
     out['trend_state'] = (df['close'] - ema) / atr.replace(0, np.nan)
-    out['structure'] = _market_structure_score(swing_highs, swing_lows, df.index, structure_lookback)
+    out['structure'] = _market_structure_score(swing_highs, swing_lows, df.index, structure_lookback,
+                                                progress_label=progress_label)
     out['momentum'] = (rsi - 50.0) / 50.0
     out['velocity'] = (df['close'] - df['close'].shift(velocity_window)) / (velocity_window * atr.replace(0, np.nan))
     out['volume_ratio'] = df['volume'] / df['volume'].rolling(volume_window).mean()

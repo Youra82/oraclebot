@@ -108,13 +108,13 @@ def build_barrier_examples(ohlcv_by_timeframe: dict, reference_timeframe: str, i
     feature_kwargs_by_timeframe = feature_kwargs_by_timeframe or {}
     context_timeframes = context_timeframes or []
 
-    def feats_for(tf):
+    def feats_for(tf, show_progress=False):
         kwargs = {**feature_kwargs, **feature_kwargs_by_timeframe.get(tf, {})}
-        return compute_features(ohlcv_by_timeframe[tf], **kwargs)
+        return compute_features(ohlcv_by_timeframe[tf], progress_label=tf if show_progress else None, **kwargs)
 
     reference_df = ohlcv_by_timeframe[reference_timeframe]
     intraday_df = ohlcv_by_timeframe[intraday_timeframe]
-    feat_ref = feats_for(reference_timeframe)
+    feat_ref = feats_for(reference_timeframe, show_progress=True)
     labels = compute_barrier_labels(reference_df, intraday_df, barrier_pct=barrier_pct)
 
     joined_index = sorted(feat_ref.index.intersection(labels.index))
@@ -125,14 +125,14 @@ def build_barrier_examples(ohlcv_by_timeframe: dict, reference_timeframe: str, i
     if context_timeframes:
         ref_ts_df = pd.DataFrame(index=pd.DatetimeIndex(joined_index).rename('ts')).reset_index()
         for tf in context_timeframes:
-            # Kein Fortschrittsbalken pro Kerze wie bei compute_barrier_labels (compute_features()
-            # ist vektorisiert, meist Sekunden) -- aber ohne JEDE Ausgabe sieht ein Nutzer, der
-            # live zuschaut, nach der Barriere-Labels-Fortschrittsanzeige minutenlang nichts mehr,
-            # obwohl hier fuer JEDEN Kontext-Timeframe (bei 15m z.B. >90000 Kerzen) neu gerechnet
-            # wird (Nutzer-Feedback 2026-07-26).
+            # compute_features() enthaelt zwei Pro-Kerze-Schleifen (Marktstruktur, S/R+Kanal) --
+            # bei grossen Kontext-Timeframes (15m: >90000 Kerzen) spuerbar langsam, nicht nur
+            # unsichtbar. Header-Zeile + die beiden eigenen Fortschrittsbalken in compute_features
+            # (progress_label=tf) sorgen dafuer, dass ein live zuschauender Nutzer sieht, dass
+            # etwas passiert, statt einer stillen Luecke (Nutzer-Feedback 2026-07-26).
             n_raw = len(ohlcv_by_timeframe.get(tf, []))
             logger.info(f"  Verarbeite Kontext-Timeframe '{tf}' ({n_raw} Kerzen)...")
-            context_feat = feats_for(tf)
+            context_feat = feats_for(tf, show_progress=True)
             if context_feat.empty:
                 # compute_features() auf einer (fast) leeren OHLCV-DataFrame liefert 0 Zeilen --
                 # dann hat das leere Ergebnis KEINEN DatetimeIndex mehr (pandas faellt auf einen
