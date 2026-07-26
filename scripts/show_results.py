@@ -99,11 +99,16 @@ def print_summary(trades: list, backtest: dict, safe_symbol: str, reference_tf: 
     logger.info("nur als relativer Vergleichswert zwischen Konfigurationen aussagekraeftig, siehe README.")
 
 
-def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol: str):
+def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol: str, since: str = None):
     """Interaktives HTML-Chart (Plotly), Stil analog zu zerobots
     run_portfolio_optimizer.py::generate_equity_html -- Rangeslider, 'x unified'-Hover,
     plotly_white-Template, dieselben Win/Loss-Marker-Farben. Ersetzt das fruehere statische
-    PNG (matplotlib) komplett, siehe README."""
+    PNG (matplotlib) komplett, siehe README.
+
+    `since`: wie bei generate_excel() -- filtert auf Trades ab diesem Datum UND laesst den
+    Anti-Martingale-Backtest fuer die Kapitalkurve/MaxDD frisch bei backtest_start_capital neu
+    laufen (nicht den bereits verzinsten Stand aus der Zeit vor `since` uebernehmen, siehe
+    Bugfix 2026-07-26 in generate_excel())."""
     try:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
@@ -112,6 +117,14 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
         return None
 
     from oraclebot.utils.data_fetch import fetch_all_timeframes
+
+    if since:
+        since_ts = pd.Timestamp(since, tz='UTC')
+        trades = [t for t in trades if t['entry_time'] >= since_ts]
+        if not trades:
+            logger.error(f"Keine Trades ab {since} im Out-of-Sample-Zeitraum.")
+            return None
+        backtest = run_anti_martingale_backtest(trades, barrier_cfg)
 
     reference_tf = barrier_cfg['reference_timeframe']
     symbol = barrier_cfg['symbol']
@@ -328,8 +341,8 @@ if __name__ == '__main__':
     parser.add_argument('--chart', action='store_true', help="Aktualisiert artifacts/charts/combined_overview.png.")
     parser.add_argument('--excel', action='store_true', help="Erstellt artifacts/charts/oraclebot_trades_<Zeitstempel>.xlsx.")
     parser.add_argument('--since', type=str, default=None,
-                         help="Nur Trades ab diesem Datum (JJJJ-MM-TT) fuer --excel beruecksichtigen. "
-                              "Kapitalkurve startet fuer den Export dann frisch bei backtest_start_capital.")
+                         help="Nur Trades ab diesem Datum (JJJJ-MM-TT) fuer --chart/--excel beruecksichtigen. "
+                              "Kapitalkurve startet dann frisch bei backtest_start_capital.")
     parser.add_argument('--start-capital', type=float, default=None,
                          help="Ueberschreibt barrier_strategy_settings.backtest_start_capital fuer diesen Lauf "
                               "(betrifft Zusammenfassung, Chart und Excel-Export gleichermassen).")
@@ -350,8 +363,8 @@ if __name__ == '__main__':
     if args.since:
         logger.info(f"Hinweis: Obige Zusammenfassung bezieht sich auf den GESAMTEN "
                     f"Out-of-Sample-Zeitraum -- der --since-Filter ({args.since}) gilt nur fuer "
-                    f"den Excel-Export unten, der separat und mit frisch bei "
-                    f"backtest_start_capital neu startender Kapitalkurve berechnet wird.")
+                    f"Chart/Excel-Export unten, die separat und mit frisch bei "
+                    f"backtest_start_capital neu startender Kapitalkurve berechnet werden.")
 
     telegram_enabled = settings.get('notification_settings', {}).get('telegram_enabled', False)
     telegram_cfg = load_secrets().get('telegram', {}) if telegram_enabled else {}
@@ -359,15 +372,23 @@ if __name__ == '__main__':
 
     if args.chart:
         logger.info('')
-        chart_path = generate_chart(trades, barrier_cfg, backtest, safe_symbol)
+        chart_path = generate_chart(trades, barrier_cfg, backtest, safe_symbol, since=args.since)
         if chart_path and telegram_enabled:
             # HTML (interaktives Plotly-Chart) -- Telegram wuerde eine .html-Datei per
             # sendPhoto entweder ablehnen oder als reine Bilddatei fehlinterpretieren, daher
             # sendDocument (wie beim Excel-Export), auch wenn die Datei nicht direkt in
             # Telegram angezeigt wird -- lokal herunterladen und im Browser oeffnen.
             from oraclebot.utils.telegram import send_document
-            caption = (f"oraclebot combined_overview.html\n"
-                       f"{len(trades)} Trades, {win_rate:.1f}% Winrate, MaxDD {backtest['max_dd_pct']:.1f}%")
+            chart_trades, chart_backtest = trades, backtest
+            if args.since:
+                since_ts = pd.Timestamp(args.since, tz='UTC')
+                chart_trades = [t for t in trades if t['entry_time'] >= since_ts]
+                chart_backtest = run_anti_martingale_backtest(chart_trades, barrier_cfg)
+            chart_win_rate = sum(1 for t in chart_trades if t['outcome'] == 'win') / len(chart_trades) * 100
+            since_note = f" (ab {args.since})" if args.since else ""
+            caption = (f"oraclebot combined_overview.html{since_note}\n"
+                       f"{len(chart_trades)} Trades, {chart_win_rate:.1f}% Winrate, "
+                       f"MaxDD {chart_backtest['max_dd_pct']:.1f}%")
             send_document(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=caption)
 
     if args.excel:

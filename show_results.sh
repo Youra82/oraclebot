@@ -42,7 +42,14 @@ MODE="${MODE//[$'\r\n ']/}"
 MODE=${MODE:-1}
 
 if [ "$MODE" == "2" ]; then
-    "$PYTHON" scripts/show_results.py --chart $CAPITAL_ARG
+    echo ""
+    read -p "Nur Trades ab diesem Datum (JJJJ-MM-TT) [leer = kompletter Out-of-Sample-Zeitraum]: " SINCE_DATE
+    SINCE_DATE="${SINCE_DATE//[$'\r\n ']/}"
+    if [ -n "$SINCE_DATE" ]; then
+        "$PYTHON" scripts/show_results.py --chart --since "$SINCE_DATE" $CAPITAL_ARG
+    else
+        "$PYTHON" scripts/show_results.py --chart $CAPITAL_ARG
+    fi
 
 elif [ "$MODE" == "3" ]; then
     echo ""
