@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import ccxt
 import pandas as pd
 import pytest
 
@@ -137,57 +138,135 @@ def _make_mock_exchange(fetch_responses, now_ms, timeframe_seconds):
     return exchange
 
 
-def test_fetch_ohlcv_retries_whole_fetch_on_drastic_shortfall(monkeypatch):
-    """Regression 2026-07-26: Bitgets 1M-Endpunkt lieferte auf einem VPS zweimal in Folge nur
-    1 von 50 angefragten Kerzen, obwohl derselbe Request von einem anderen Rechner aus
-    zuverlaessig 50+ lieferte -- sieht nach einem anhaltenden Rate-Limit/Routing-Problem aus,
-    nicht nach einem einzelnen Netzwerk-Hickser (den die bestehenden Chunk-Retries schon
-    abfangen). fetch_ohlcv() muss den KOMPLETTEN Fetch automatisch wiederholen, wenn das
-    Ergebnis drastisch kuerzer als angefragt ist UND `since` noch weit von "jetzt" entfernt war
-    (sonst waere ein knappes Ergebnis normal, z.B. bei einer inkrementellen Nachfrage mit nur
-    wenigen neuen Kerzen seit dem letzten Cache-Stand)."""
-    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
-
-    timeframe_seconds = 30 * 24 * 60 * 60  # '1M'
+def _make_gapped_mock_exchange(now_ms, timeframe_seconds, gap_start_ms, gap_end_ms, chunk_limit=200):
+    """Simuliert eine Boerse mit einer ECHTEN, dauerhaften Datenluecke in [gap_start_ms,
+    gap_end_ms) -- jede Anfrage (Hauptschleife UND Probe) reagiert konsistent auf `since`, statt
+    eine feste Antwortfolge abzuspulen. Bildet den 2026-07-26 auf einem VPS beobachteten Fall
+    nach: zwei komplett unabhaengige Fetch-Versuche brachen exakt an derselben Stelle ab, weil es
+    sich um eine echte Boersen-Datenluecke handelte, nicht um einen einzelnen Netzwerk-Hickser."""
     timeframe_ms = timeframe_seconds * 1000
-    now_ms = 10_000 * timeframe_ms
+    exchange = MagicMock()
+    exchange.load_markets.return_value = None
+    exchange.parse_timeframe.return_value = timeframe_seconds
+    exchange.milliseconds.return_value = now_ms
+    exchange.rateLimit = 0
 
-    # Erster Versuch: genau 1 Kerze, dann dreimal leer -> Abbruch (reproduziert die 1/50-Situation).
-    first_candle = [now_ms - 9999 * timeframe_ms, 1.0, 1.0, 1.0, 1.0, 1.0]
-    bad_exchange = _make_mock_exchange([[first_candle], [], [], []], now_ms, timeframe_seconds)
+    def fake_fetch(symbol, timeframe, since, limit):
+        # Kerzen-Zeitstempel MUESSEN auf das Zeitraster gerundet werden (wie bei einer echten
+        # Boerse) statt roh vom (moeglicherweise unausgerichteten, z.B. "...+1ms") `since`-Wert
+        # uebernommen zu werden -- sonst rueckt `since = chunk[-1][0] + 1` bei jedem Call nur um
+        # 1ms statt um eine volle Kerzenlaenge vor, was in der Naehe von "jetzt" Millionen
+        # Aufrufe statt ein paar Dutzend braeuchte (im Test gefunden 2026-07-26).
+        ts = ((since // timeframe_ms) + 1) * timeframe_ms
+        if gap_start_ms <= ts < gap_end_ms:
+            return []
+        candles = []
+        while len(candles) < limit and ts < now_ms:
+            if gap_start_ms <= ts < gap_end_ms:
+                break  # Chunk endet an der Luecke, nicht dahinter springen
+            candles.append([ts, 1.0, 1.0, 1.0, 1.0, 1.0])
+            ts += timeframe_ms
+        return candles
 
-    # Zweiter Versuch: liefert die volle angefragte Menge in einem Rutsch.
-    good_candles = [[now_ms - (9999 - i) * timeframe_ms, 1.0, 1.0, 1.0, 1.0, 1.0] for i in range(50)]
-    good_exchange = _make_mock_exchange([good_candles, []], now_ms, timeframe_seconds)
-
-    exchange_ctor = MagicMock(side_effect=[bad_exchange, good_exchange])
-    monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', exchange_ctor)
-
-    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1M', limit=50, since_ms=0)
-
-    assert exchange_ctor.call_count == 2  # genau ein Ganz-Fetch-Retry ausgeloest
-    assert len(df) == 50
+    exchange.fetch_ohlcv.side_effect = fake_fetch
+    return exchange
 
 
-def test_fetch_ohlcv_does_not_retry_when_shortfall_is_near_now(monkeypatch):
-    """Ein knappes Ergebnis nahe 'jetzt' (z.B. inkrementelle Nachfrage mit wenig Neuem seit dem
-    letzten Cache-Stand) ist normal und darf KEINEN Ganz-Fetch-Retry ausloesen."""
+def test_probe_next_available_ts_finds_the_end_of_a_gap(monkeypatch):
     monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
-
     timeframe_seconds = 60 * 60  # '1h'
     timeframe_ms = timeframe_seconds * 1000
     now_ms = 10_000 * timeframe_ms
-    since_ms = now_ms - timeframe_ms  # nur 1 Timeframe-Schritt in der Vergangenheit -> near_now
+    gap_start = now_ms - 5000 * timeframe_ms
+    gap_end = gap_start + 500 * timeframe_ms  # 500h Luecke
 
-    one_candle = [since_ms + 1, 1.0, 1.0, 1.0, 1.0, 1.0]
-    exchange = _make_mock_exchange([[one_candle], []], now_ms, timeframe_seconds)
-    exchange_ctor = MagicMock(side_effect=[exchange])
+    exchange = _make_gapped_mock_exchange(now_ms, timeframe_seconds, gap_start, gap_end)
+    found = data_fetch_mod._probe_next_available_ts(exchange, SYMBOL, '1h', gap_start, now_ms, timeframe_ms)
+
+    assert found is not None
+    assert gap_end - timeframe_ms <= found <= gap_end + timeframe_ms  # nah an der echten Grenze
+
+
+def test_probe_next_available_ts_returns_none_if_gap_extends_to_upper_bound(monkeypatch):
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+    timeframe_seconds = 60 * 60
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+    gap_start = now_ms - 5000 * timeframe_ms
+
+    # Luecke reicht bis "jetzt" -- nirgends mehr Daten zu finden.
+    exchange = _make_gapped_mock_exchange(now_ms, timeframe_seconds, gap_start, now_ms + timeframe_ms)
+    found = data_fetch_mod._probe_next_available_ts(exchange, SYMBOL, '1h', gap_start, now_ms, timeframe_ms)
+
+    assert found is None
+
+
+def test_fetch_ohlcv_skips_over_a_real_gap_and_continues_afterward(monkeypatch):
+    """Bugfix 2026-07-26: eine echte Boersen-Datenluecke (siehe dnabot-Fund: BTC 1h fehlte
+    komplett fuer 23 Tage) liess den alten Ganz-Fetch-Retry-Mechanismus deterministisch an
+    derselben Stelle scheitern, egal wie oft wiederholt wurde. fetch_ohlcv() muss die Luecke
+    stattdessen ueberspringen (per _probe_next_available_ts) und DANACH normal weiterladen."""
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+    timeframe_seconds = 60 * 60  # '1h'
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+    gap_start = now_ms - 5000 * timeframe_ms
+    gap_end = gap_start + 500 * timeframe_ms
+
+    exchange = _make_gapped_mock_exchange(now_ms, timeframe_seconds, gap_start, gap_end)
+    exchange_ctor = MagicMock(return_value=exchange)
     monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', exchange_ctor)
 
-    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1h', limit=50, since_ms=since_ms)
+    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1h', limit=6000, since_ms=gap_start)
 
-    assert exchange_ctor.call_count == 1  # kein Retry
-    assert len(df) == 1
+    assert len(df) > 0
+    # Es darf keine Kerze INNERHALB der Luecke geben -- die Historie vor und nach der Luecke
+    # muss aber beide vorhanden sein.
+    in_gap = df[(df.index >= pd.Timestamp(gap_start, unit='ms', tz='UTC'))
+                & (df.index < pd.Timestamp(gap_end, unit='ms', tz='UTC'))]
+    assert len(in_gap) == 0
+    assert df.index[-1] > pd.Timestamp(gap_end, unit='ms', tz='UTC')
+
+
+def test_fetch_ohlcv_retries_on_rate_limit_exceeded_without_advancing_since(monkeypatch):
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+    timeframe_seconds = 60 * 60
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+    since_ms = now_ms - 3 * timeframe_ms
+
+    good_candles = [[since_ms + 1 + i * timeframe_ms, 1.0, 1.0, 1.0, 1.0, 1.0] for i in range(3)]
+    exchange = MagicMock()
+    exchange.load_markets.return_value = None
+    exchange.parse_timeframe.return_value = timeframe_seconds
+    exchange.milliseconds.return_value = now_ms
+    exchange.rateLimit = 0
+    # Erster Aufruf: RateLimitExceeded. Zweiter Aufruf (gleiches since, da bei der Exception
+    # nicht weitergerueckt wird): liefert die Kerzen.
+    exchange.fetch_ohlcv.side_effect = [ccxt.RateLimitExceeded('too many requests'), good_candles, []]
+    monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', MagicMock(return_value=exchange))
+
+    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1h', limit=10, since_ms=since_ms)
+
+    assert len(df) == 3
+    assert exchange.fetch_ohlcv.call_count == 3
+
+
+def test_fetch_ohlcv_empty_response_at_now_ends_cleanly_without_warning(monkeypatch, caplog):
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+    timeframe_seconds = 60 * 60
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+    since_ms = now_ms - timeframe_ms  # 1 Schritt vor "jetzt" -- normaler Endzustand
+
+    exchange = _make_mock_exchange([[]], now_ms, timeframe_seconds)
+    monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', MagicMock(return_value=exchange))
+
+    with caplog.at_level('WARNING'):
+        df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1h', limit=10, since_ms=since_ms)
+
+    assert len(df) == 0
+    assert not any('Luecke' in r.message or 'Leere Antwort' in r.message for r in caplog.records)
 
 
 def make_daily_df(n_days, start='2024-01-01'):

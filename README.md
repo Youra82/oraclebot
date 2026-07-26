@@ -675,6 +675,33 @@ betroffenen Timeframe explizit. Notfalls dessen Cache-Datei gezielt löschen
 (`artifacts/datasets/ohlcv_<symbol>_<tf>_<limit>.pkl`) und `./run_pipeline.sh` erneut laufen
 lassen (bei der Cache-Frage "j", nur für diesen einen fehlenden Timeframe nötig).
 
+#### Trainingsdaten wirken "eingefroren" (z.B. auffällig viele Wochen ohne Trades am Ende des Zeitraums)
+
+Bugfix 2026-07-26: `fetch_all_timeframes()` übernahm eine vorhandene OHLCV-Cache-Datei bisher
+1:1, OHNE je neue Kerzen anzuhängen — "n" bei "Gecachte OHLCV-Daten frisch abrufen?"
+(`run_pipeline.sh`/`optimize.sh`) bedeutete dadurch stillschweigend "beliebig alten Cache für
+immer weiterverwenden" statt "schnell, aber trotzdem aktuell". Live beobachtet: Trainingsdaten
+blieben über Wochen auf demselben Stand eingefroren. **Fix:** `fetch_all_timeframes()` nutzt
+jetzt bei `use_cache=True` denselben inkrementellen Mechanismus wie die Live-Inferenz
+(`fetch_ohlcv_incremental()`) und hängt tatsächlich neue Kerzen an; `use_cache=False` löscht den
+Cache und erzwingt dadurch einen echten Komplettabruf. Betroffen waren nur bereits vorhandene
+Cache-Dateien vor diesem Fix — ein frischer Cache ist unproblematisch.
+
+#### Fetch bricht wiederholt an derselben Stelle ab (z.B. `Leere Antwort` bei exakt demselben `since`)
+
+War ursprünglich als maschinenspezifisches Rate-Limit-/Routing-Problem eingestuft (siehe
+`1M`-Fix oben) und mit einer komplexeren Chunk-/Ganz-Fetch-Retry-Logik behandelt worden — die
+aber bei einer ECHTEN Bitget-Datenlücke (bestätigter Fund aus dnabot: BTC 1h fehlte komplett für
+23 Tage, davor/danach regulär abrufbar) prinzipbedingt nicht half, da blindes Wiederholen
+derselben Anfrage immer wieder an derselben Lücke scheitert, egal wie oft oder von welcher
+Maschine aus. **Fix (2026-07-26):** `fetch_ohlcv()` wurde auf das in `ltbbot`/`dnabot`/`probebot`
+produktiv bewährte, einfachere Muster umgestellt (`fetch_limit=200` pro Call, Vorwärts-
+Paginierung ab `since`) und um dnabots `_probe_next_available_ts()` ergänzt: bei einer echten
+Lücke wird per exponentiell wachsenden Schritten + Bisektion aktiv nach dem nächsten
+verfügbaren Zeitpunkt gesucht und dort weitergemacht, statt abzubrechen oder sinnlos zu
+wiederholen. Das Ergebnis enthält dann ein kleines, geloggtes internes Loch statt einer
+abgeschnittenen Historie.
+
 #### Neu trainieren (nur auf der Trainings-Maschine, nicht auf dem VPS)
 
 ```bash

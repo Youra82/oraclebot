@@ -13,116 +13,115 @@ logger = logging.getLogger(__name__)
 
 TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
 
-FULL_FETCH_RETRY_LIMIT = 2
-FULL_FETCH_SHORTFALL_RATIO = 0.5
+
+def _probe_next_available_ts(exchange, symbol: str, timeframe: str, from_ts: int, upper_bound_ts: int,
+                              tf_ms: int) -> int:
+    """Sucht den naechsten Zeitpunkt >= from_ts, an dem Bitget wieder Kerzen liefert.
+
+    Portiert aus dnabot/src/dnabot/utils/exchange.py -- Bitget hat fuer manche Symbole/
+    Timeframes bestaetigte, mehrwoechige Luecken in der eigenen Historie (dnabot-Fund: BTC 1h
+    fehlte komplett vom 2026-04-18 bis 2026-05-10, davor/danach regulaer abrufbar). Kein
+    Rate-Limit-Problem, sondern eine echte Datenluecke -- blindes Wiederholen derselben Anfrage
+    liefert IMMER wieder nichts, egal wie oft oder von welcher Maschine aus (beobachtet
+    2026-07-26 bei oraclebot: zwei komplett unabhaengige Fetch-Versuche brachen exakt am selben
+    `since` ab). Erst exponentiell wachsende Schritte vorwaerts tasten, bis irgendwo wieder Daten
+    auftauchen, dann per Bisektion zwischen letztem leeren und erstem gefundenen Punkt die genaue
+    Grenze eingrenzen. Gibt None zurueck, wenn bis upper_bound_ts nirgends mehr Daten zu finden sind.
+    """
+    lo = from_ts
+    hi = from_ts
+    step = tf_ms * 200
+    found_hi = None
+    while hi < upper_bound_ts:
+        hi = min(hi + step, upper_bound_ts)
+        try:
+            probe = exchange.fetch_ohlcv(symbol, timeframe, hi, 5)
+        except Exception:
+            probe = None
+        time.sleep(0.5)
+        if probe:
+            found_hi = hi
+            break
+        lo = hi
+        step *= 2
+    if found_hi is None:
+        return None
+    for _ in range(12):
+        if found_hi - lo <= tf_ms:
+            break
+        mid = lo + (found_hi - lo) // 2
+        try:
+            probe = exchange.fetch_ohlcv(symbol, timeframe, mid, 5)
+        except Exception:
+            probe = None
+        time.sleep(0.5)
+        if probe:
+            found_hi = mid
+        else:
+            lo = mid
+    return found_hi
 
 
 def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str = 'bitget',
-                 since_ms: int = None, _retry_count: int = 0) -> pd.DataFrame:
+                 since_ms: int = None) -> pd.DataFrame:
     """Laedt die letzten `limit` Kerzen fuer `symbol`/`timeframe` ueber die oeffentliche ccxt-API.
 
-    Paginiert vorwaerts ab einem berechneten Startzeitpunkt (statt rueckwaerts anhand
-    einer angenommenen Chunk-Groesse) -- Bitget liefert pro `since`-Request oft deutlich
-    weniger Kerzen als angefragt (~90-100 statt 1000), was bei rueckwaerts-Paginierung
-    stillschweigend Luecken in der Historie erzeugen wuerde.
+    Dieselbe Vorwaerts-Paginierung + Luecken-Umgehung wie in ltbbot/dnabot/probebot (Fleet-
+    Standard, 2026-07-26 uebernommen, nachdem oraclebots eigene, komplexere Chunk-/Ganz-Fetch-
+    Retry-Logik dieselbe Bitget-Datenluecke wiederholt NICHT umgehen konnte -- siehe
+    _probe_next_available_ts()). `fetch_limit=200` pro Call ist der in mehreren Bots dieser Flotte
+    produktiv bewaehrte Wert.
 
     `since_ms`: optionaler expliziter Startzeitpunkt (ms seit Epoch), z.B. fuer inkrementelle
     Updates ab dem letzten Cache-Stand (siehe fetch_ohlcv_incremental()) -- ueberschreibt die
     sonst aus `limit` berechnete Startzeit.
-
-    `_retry_count`: intern (nicht fuer Aufrufer gedacht) -- zaehlt Komplett-Fetch-Wiederholungen,
-    siehe die Ganz-Fetch-Retry-Logik am Ende der Funktion.
     """
     exchange = getattr(ccxt, exchange_id)({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
     exchange.load_markets()
 
     timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
-    now_ms = exchange.milliseconds()
-    since = since_ms if since_ms is not None else now_ms - limit * timeframe_ms
-
-    # Bitget-Eigenheiten bei paginierten `since`-Requests:
-    # 1) Requests, deren impliziter Zeitraum (limit * timeframe_ms) 90 Tage ueberschreitet,
-    #    werden abgelehnt (betrifft v.a. 1w/1M mit ihrer eigenen "utc"-Granularitaets-Variante).
-    # 2) Wird ein `limit` > ~200 angefragt, ignoriert Bitget `since` und liefert stattdessen
-    #    die letzten ~200 Kerzen VOR dem impliziten Ende (since + limit*timeframe_ms) --
-    #    das reisst grosse Luecken, weil die Antwort dann nicht mehr bei `since` beginnt.
-    # Ein Cap von 100 pro Call haelt beide Faelle sicher ein.
-    max_span_ms = 89 * 24 * 3600 * 1000
-    chunk_limit = max(2, min(100, max_span_ms // timeframe_ms))
+    since = since_ms if since_ms is not None else exchange.milliseconds() - limit * timeframe_ms
+    fetch_limit = 200
 
     all_ohlcv = []
-    max_iterations = limit  # Backstop, falls die Boerse pro Call nur 1 Kerze liefert
     start_time = time.time()
-    for _ in range(max_iterations):
-        # Retry statt sofortigem Abbruch bei leerer/fehlgeschlagener Antwort: bei sehr grob
-        # aufgeloesten Timeframes (v.a. 1M, wo Bitget pro Call nur chunk_limit=2 Kerzen liefert)
-        # braucht ein voller Fetch ~20 sequentielle Requests -- ein einzelner transienter
-        # Netzwerk-/Rate-Limit-Hickser wuerde sonst die gesamte Historie vorzeitig abschneiden
-        # (beobachtet 2026-07-10: VPS-Lauf brach nach 3 von 43 benoetigten 1M-Kerzen ab, obwohl
-        # ein identischer Fetch von einem anderen Rechner aus vollstaendig durchlief).
-        # Nahe an "jetzt" ist eine leere Antwort der NORMALE Endzustand (die aktuell laufende
-        # Kerze existiert schlicht noch nicht als abfragbare since-Grenze) -- kein Fehler, kein
-        # Retry noetig. Nur bei since deutlich in der Vergangenheit (dort SOLLTE Historie
-        # existieren) ist eine leere Antwort verdaechtig genug fuer Retries + Log-Warnungen.
-        near_now = (now_ms - since) < (timeframe_ms * 2)
-        attempts = 1 if near_now else 3
-        chunk = None
-        for attempt in range(attempts):
-            try:
-                chunk = exchange.fetch_ohlcv(symbol, timeframe, since, chunk_limit)
-            except Exception as e:
-                if not near_now:
-                    logger.warning(f"{symbol} {timeframe}: Fetch-Fehler bei since={since} "
-                                   f"(Versuch {attempt + 1}/{attempts}): {type(e).__name__}: {e}")
-                chunk = None
-            if chunk:
+    while since < exchange.milliseconds():
+        try:
+            chunk = exchange.fetch_ohlcv(symbol, timeframe, since, fetch_limit)
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"{symbol} {timeframe}: Rate-Limit erreicht ({e}), warte 5s...")
+            time.sleep(5)
+            continue
+        except Exception as e:
+            logger.error(f"{symbol} {timeframe}: Fehler beim Laden: {e}")
+            time.sleep(1)
+            break
+
+        if not chunk:
+            now_ms = exchange.milliseconds()
+            if since >= now_ms - timeframe_ms:
+                break  # Gegenwart erreicht -- die aktuell laufende Kerze existiert noch nicht, kein Fehler.
+            logger.warning(f"{symbol} {timeframe}: Leere Antwort ab {pd.Timestamp(since, unit='ms', tz='UTC')} "
+                           f"-- suche naechsten verfuegbaren Zeitpunkt (bekannte Bitget-Datenluecken)...")
+            next_ts = _probe_next_available_ts(exchange, symbol, timeframe, since, now_ms, timeframe_ms)
+            if next_ts is None:
+                logger.warning(f"{symbol} {timeframe}: keine weiteren Daten bis 'jetzt' gefunden, "
+                               f"breche ab ({len(all_ohlcv)}/{limit} Kerzen).")
                 break
-            if not chunk and not near_now:
-                logger.warning(f"{symbol} {timeframe}: Leere Antwort bei since={since} "
-                               f"(Versuch {attempt + 1}/{attempts}, bisher {len(all_ohlcv)}/{limit} Kerzen).")
-            if attempt < attempts - 1:
-                time.sleep(1.0 * (attempt + 1))
-        if not chunk:
-            if not near_now:
-                logger.warning(f"{symbol} {timeframe}: Fetch abgebrochen nach {len(all_ohlcv)}/{limit} "
-                               f"Kerzen (since={since} liefert weiterhin nichts nach {attempts} Versuchen).")
-            break
-        if all_ohlcv:
-            chunk = [c for c in chunk if c[0] > all_ohlcv[-1][0]]
-        if not chunk:
-            break
+            logger.info(f"{symbol} {timeframe}: Daten wieder verfuegbar ab "
+                        f"{pd.Timestamp(next_ts, unit='ms', tz='UTC')}.")
+            since = next_ts
+            continue
+
         all_ohlcv.extend(chunk)
         render_progress(f"{symbol} {timeframe}", len(all_ohlcv), limit, start_time)
         # +1ms statt +timeframe_ms: Bitgets `since` ist exklusiv (timestamp > since),
         # ein voller Timeframe-Schritt trifft exakt die naechste Kerze und ueberspringt sie.
-        since = all_ohlcv[-1][0] + 1
-        if since >= now_ms or len(all_ohlcv) >= limit:
-            break
+        since = chunk[-1][0] + 1
         time.sleep(exchange.rateLimit / 1000)
 
     if all_ohlcv:
         finish_progress()
-
-    # Ganz-Fetch-Retry bei drastischem Rueckstand: die per-Chunk-Retries oben (3x, kurzer
-    # Backoff) fangen einzelne transiente Ausreisser ab, helfen aber nichts, wenn Bitget fuer
-    # eine komplette Session konsequent nur einen Bruchteil der Historie liefert (beobachtet
-    # 2026-07-26: 1M brach zweimal in Folge auf demselben VPS bei 1/50 Kerzen ab, waehrend
-    # derselbe Request von einem anderen Rechner aus zuverlaessig 50+ lieferte -- sieht nach
-    # einem laenger anhaltenden Rate-Limit/Routing-Problem aus, nicht nach einem einzelnen
-    # Hickser). Nur wenn `since` noch WEIT von "jetzt" entfernt ist -- sonst ist ein knappes
-    # Ergebnis normal (z.B. inkrementelle Nachfrage mit nur wenigen neuen Kerzen seit dem
-    # letzten Cache-Stand, kein Fehler).
-    caught_up_to_now = (now_ms - since) < (timeframe_ms * 2)
-    if (not caught_up_to_now and len(all_ohlcv) < limit * FULL_FETCH_SHORTFALL_RATIO
-            and _retry_count < FULL_FETCH_RETRY_LIMIT):
-        wait_s = 15 * (_retry_count + 1)
-        logger.warning(f"{symbol} {timeframe}: nur {len(all_ohlcv)}/{limit} Kerzen erhalten, "
-                        f"`since` noch weit von jetzt entfernt -- vermutlich anhaltendes "
-                        f"Rate-Limit/Routing-Problem statt einzelnem Hickser. Kompletter "
-                        f"Neuversuch {_retry_count + 1}/{FULL_FETCH_RETRY_LIMIT} in {wait_s}s...")
-        time.sleep(wait_s)
-        return fetch_ohlcv(symbol, timeframe, limit=limit, exchange_id=exchange_id,
-                            since_ms=since_ms, _retry_count=_retry_count + 1)
 
     if not all_ohlcv:
         return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
@@ -139,7 +138,8 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
     expected = pd.Timedelta(milliseconds=timeframe_ms)
     unexpected_gaps = gaps[gaps > expected * 1.5]
     if len(unexpected_gaps) > 0:
-        logger.warning(f"{symbol} {timeframe}: {len(unexpected_gaps)} unerwartete Luecke(n) in der Historie entdeckt.")
+        logger.warning(f"{symbol} {timeframe}: {len(unexpected_gaps)} uebersprungene Luecke(n) in der "
+                       f"Historie (siehe obige 'Daten wieder verfuegbar ab'-Zeilen fuer Details).")
 
     return df
 
