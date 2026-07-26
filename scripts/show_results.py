@@ -26,6 +26,14 @@ ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'datasets')
 CHARTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'charts')
 
 
+def load_secrets() -> dict:
+    secret_path = os.path.join(PROJECT_ROOT, 'secret.json')
+    if not os.path.exists(secret_path):
+        return {}
+    with open(secret_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 def load_settings() -> dict:
     with open(os.path.join(PROJECT_ROOT, 'settings.json'), 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -168,10 +176,14 @@ def print_summary(trades: list, backtest: dict, safe_symbol: str, reference_tf: 
 
 
 def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol: str):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.dates as mdates
-    import matplotlib.pyplot as plt
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.error("matplotlib nicht installiert -- Chart uebersprungen (pip install matplotlib).")
+        return None
 
     from oraclebot.utils.data_fetch import fetch_all_timeframes
 
@@ -254,6 +266,7 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
     outfile = os.path.join(CHARTS_DIR, 'combined_overview.png')
     fig.savefig(outfile)
     logger.info(f"Chart gespeichert: {outfile}")
+    return outfile
 
 
 def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
@@ -263,14 +276,14 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
         from openpyxl.utils import get_column_letter
     except ImportError:
         logger.error("openpyxl nicht installiert -- Excel-Export uebersprungen (pip install openpyxl).")
-        return
+        return None
 
     if since:
         since_ts = pd.Timestamp(since, tz='UTC')
         trades = [t for t in trades if t['entry_time'] >= since_ts]
         if not trades:
             logger.error(f"Keine Trades ab {since} im Out-of-Sample-Zeitraum.")
-            return
+            return None
 
     coin = barrier_cfg['symbol'].split('/')[0]
     reference_tf = barrier_cfg['reference_timeframe']
@@ -360,6 +373,7 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
     outfile = os.path.join(CHARTS_DIR, f'oraclebot_trades_{ts_stamp}.xlsx')
     wb.save(outfile)
     logger.info(f"Excel-Tabelle gespeichert: {outfile}")
+    return outfile
 
 
 if __name__ == '__main__':
@@ -371,7 +385,8 @@ if __name__ == '__main__':
                               "Kapitalkurve startet fuer den Export dann frisch bei backtest_start_capital.")
     args = parser.parse_args()
 
-    barrier_cfg = load_settings()['barrier_strategy_settings']
+    settings = load_settings()
+    barrier_cfg = settings['barrier_strategy_settings']
     preds, safe_symbol = load_predictions(barrier_cfg)
     trades = build_trades(preds, barrier_cfg)
     if not trades:
@@ -381,10 +396,29 @@ if __name__ == '__main__':
     backtest = run_anti_martingale_backtest(trades, barrier_cfg)
     print_summary(trades, backtest, safe_symbol, barrier_cfg['reference_timeframe'])
 
+    telegram_enabled = settings.get('notification_settings', {}).get('telegram_enabled', False)
+    telegram_cfg = load_secrets().get('telegram', {}) if telegram_enabled else {}
+    win_rate = sum(1 for t in trades if t['outcome'] == 'win') / len(trades) * 100
+
     if args.chart:
         logger.info('')
-        generate_chart(trades, barrier_cfg, backtest, safe_symbol)
+        chart_path = generate_chart(trades, barrier_cfg, backtest, safe_symbol)
+        if chart_path and telegram_enabled:
+            from oraclebot.utils.telegram import send_photo
+            caption = (f"oraclebot combined_overview.png\n"
+                       f"{len(trades)} Trades, {win_rate:.1f}% Winrate, MaxDD {backtest['max_dd_pct']:.1f}%")
+            send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=caption)
 
     if args.excel:
         logger.info('')
-        generate_excel(trades, barrier_cfg, since=args.since)
+        excel_path = generate_excel(trades, barrier_cfg, since=args.since)
+        if excel_path and telegram_enabled:
+            from oraclebot.utils.telegram import send_document
+            excel_trades = trades
+            if args.since:
+                since_ts = pd.Timestamp(args.since, tz='UTC')
+                excel_trades = [t for t in trades if t['entry_time'] >= since_ts]
+            excel_win_rate = sum(1 for t in excel_trades if t['outcome'] == 'win') / len(excel_trades) * 100
+            since_note = f" (ab {args.since})" if args.since else ""
+            caption = f"oraclebot Trade-Log-Export{since_note}: {len(excel_trades)} Trades, {excel_win_rate:.1f}% Winrate"
+            send_document(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), excel_path, caption=caption)

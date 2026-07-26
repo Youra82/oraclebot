@@ -439,9 +439,16 @@ Drei Modi:
    auf Trades ab einem Startdatum (Kapitalkurve startet dann frisch bei
    `backtest_start_capital`, nicht mit dem alten Compounding-Stand fortgesetzt).
 
+Chart (Modus 2) und Excel (Modus 3) werden zusätzlich per Telegram verschickt, wenn
+`notification_settings.telegram_enabled: true` ist (Chart per `sendPhoto`, Excel per
+`sendDocument` — beide unabhängig von `live_trading_enabled`, wie die übrigen
+Telegram-Benachrichtigungen).
+
 Beide Skripte brauchen ein lokales `.venv` (`./install.sh`) und laufen NICHT auf dem VPS — das
 Modell ist git-getrackt, der VPS braucht kein eigenes Training (siehe
-[VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)).
+[VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)). `matplotlib`/`openpyxl`
+werden dafür trotzdem gebraucht (in `requirements.txt`, installiert via `./install.sh`), auch
+wenn sie für Training/Live-Inferenz selbst nicht nötig sind.
 
 #### 3. Modell pushen
 

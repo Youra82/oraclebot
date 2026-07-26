@@ -28,6 +28,26 @@ def send_photo(bot_token: str, chat_id: str, file_path: str, caption: str = ""):
         logger.error(f"Fehler beim Senden des Bildes: {e}")
 
 
+def send_document(bot_token: str, chat_id: str, file_path: str, caption: str = ""):
+    """Sendet eine beliebige Datei (z.B. .xlsx) an einen Telegram-Chat ueber sendDocument
+    (anders als send_photo(), das Telegram serverseitig komprimiert/in ein Bildformat wandelt --
+    fuer Excel-Dateien waere das falsch)."""
+    if not bot_token or not chat_id:
+        logger.warning("Telegram Bot-Token oder Chat-ID nicht konfiguriert. Datei nicht gesendet.")
+        return
+    api_url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    try:
+        with open(file_path, 'rb') as doc:
+            response = requests.post(api_url, data={'chat_id': chat_id, 'caption': caption},
+                                      files={'document': doc}, timeout=60)
+            response.raise_for_status()
+            logger.info("Telegram-Datei erfolgreich gesendet.")
+    except FileNotFoundError:
+        logger.error(f"Datei nicht gefunden: {file_path}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Fehler beim Senden der Datei: {e}")
+
+
 def send_message(bot_token: str, chat_id: str, message: str):
     """Sendet eine Textnachricht an einen Telegram-Chat (MarkdownV2, escaped)."""
     if not bot_token or not chat_id:
