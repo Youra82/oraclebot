@@ -77,9 +77,13 @@ groß genug, dass zusätzliche Zeitebenen nicht bloß überanpassen.
 oraclebot/
 ├── scripts/
 │   ├── train_barrier_model.py     # Trainiert das Barriere-Modell + Walk-Forward-Robustheitscheck
-│   └── predict_next_barrier.py    # Live-Inferenz + Trading auf 4h-Kadenz
+│   ├── predict_next_barrier.py    # Live-Inferenz + Trading auf 4h-Kadenz (per Cron)
+│   └── show_results.py            # Diagnose + Anti-Martingale-Backtest + Chart/Excel-Export
+├── run_pipeline.sh                # Interaktiv: trainiert das Modell (ruft train_barrier_model.py)
+├── show_results.sh                # Interaktiv: Zusammenfassung/Chart/Excel (ruft show_results.py)
 ├── install.sh                     # Erstinstallation auf VPS
 ├── update.sh                      # Git-Update (sichert secret.json)
+├── run_tests.sh                   # Testsuite + Live-Smoke-Test (Gate+Marker)
 ├── settings.json                  # Konfiguration
 ├── secret.json                    # Bitget-API-Keys + Telegram Bot-Token/Chat-ID (nicht in Git)
 │
@@ -107,9 +111,13 @@ oraclebot/
 
 artifacts/
 ├── datasets/
-│   ├── barrier_model_BTC_USDT_USDT_4h.pkl  # Trainiertes Modell (GIT-GETRACKT, ~120KB)
-│   └── *.jsonl / ohlcv_*.pkl                # Trainingsdaten-Cache (NICHT in Git, jederzeit neu baubar)
-└── state/                          # Live-Zustand der Anti-Martingale-Positionsgroesse (nicht in Git)
+│   ├── barrier_model_BTC_USDT_USDT_4h.pkl   # Trainiertes Modell (GIT-GETRACKT, ~120KB)
+│   ├── barrier_diagnostics_*.json            # Diagnose des letzten Trainingslaufs (nicht in Git)
+│   └── *.jsonl / ohlcv_*.pkl                 # Trainingsdaten-Cache (NICHT in Git, jederzeit neu baubar)
+├── charts/                          # show_results.py --chart/--excel Ausgabe (nicht in Git)
+│   ├── combined_overview.png        # Preis+Trades / Kapitalkurve / Serien-Chart
+│   └── oraclebot_trades_*.xlsx      # Formatierter Trade-Log-Export (Excel)
+└── state/                           # Live-Zustand der Anti-Martingale-Positionsgroesse (nicht in Git)
 ```
 
 ---
@@ -306,6 +314,8 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
         "live_trading_enabled": false,
         "history_days": 1000,
         "val_split": 0.30,
+        "backtest_start_capital": 15.0,
+        "taker_fee_rate_pct": 0.06,
         "num_threads": 12,
         "feature_settings": { "atr_window": 14, "ema_window": 50, "...": "..." },
         "feature_settings_by_timeframe": { "1M": { "ema_window": 6, "...": "..." }, "1w": { "ema_window": 12, "...": "..." } }
@@ -324,8 +334,10 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 | `barrier_pct` | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. |
 | `model_max_depth` | HistGBM-Baumtiefe. 3 validiert (siehe [Modell](#3-modell-barrier_modelpy)). |
 | `min_confidence` | 0.60 validiert (684 Trades, 80.6% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=4.03` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, **inklusive** Bitget-Taker-Gebühren 0.06%/Seite Roundtrip) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-26). Ohne Gebührenmodell hätte derselbe Bootstrap-Ansatz `base_pct=5.17` ergeben, was mit echten Gebühren aber ein 90.-Perzentil-MaxDD von ~60% statt ~50% bedeutet — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
+| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=4.03` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, **inklusive** Bitget-Taker-Gebühren) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-26). Ohne Gebührenmodell hätte derselbe Bootstrap-Ansatz `base_pct=5.17` ergeben, was mit echten Gebühren aber ein 90.-Perzentil-MaxDD von ~60% statt ~50% bedeutet — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
 | `history_days` | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
+| `backtest_start_capital` | Startkapital fürs `show_results.py`-Backtest (Anti-Martingale-Kapitalkurve/Chart/Excel-Export). Hat keinen Einfluss auf Live-Trading — dort zählt das echte Bitget-Guthaben. |
+| `taker_fee_rate_pct` | Bitget-Taker-Gebühr pro Seite (Standard-Tier ohne VIP-Rabatt), fließt in `show_results.py`'s Backtest UND in die Anti-Martingale-Kalibrierung ein — bei 100x Hebel ~12% der Brutto-PnL pro Trade, keine Kleinigkeit (siehe [Einschränkungen](#wichtige-regeln--bekannte-einschränkungen)). |
 | `feature_settings_by_timeframe` | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
 | `live_trading_enabled` | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
 | `notification_settings.telegram_enabled` | Unabhängig von `live_trading_enabled` — Prognosen kommen auch bei deaktiviertem Live-Trading per Telegram an. |
@@ -346,34 +358,63 @@ cp secret.json.example secret.json && nano secret.json   # Telegram (optional)
 
 ## Workflow
 
+Wie bei den anderen Bots im Fleet: `./run_pipeline.sh` zum Trainieren, `./show_results.sh` zum
+Ansehen der Ergebnisse. oraclebot ist aber deutlich einfacher als z.B. dnabot/zerobot — **ein**
+fest konfiguriertes Symbol (BTC/USDT:USDT) mit einem festen Multi-Timeframe-Kontext, keine
+Coin-/Timeframe-Auswahl, kein Genome-Discovery/Portfolio-Optimizer. Beide Skripte fragen daher
+nur wenige, wirklich relevante Optionen ab.
+
 #### 1. Modell trainieren
 
 ```bash
-PYTHONPATH=src python scripts/train_barrier_model.py
+./run_pipeline.sh
 ```
 
-Lädt (gecachte) OHLCV-Daten für `reference_timeframe` + `intraday_timeframe` +
-`context_timeframes` (Standard: 4h, 15m, 1M, 1w, 1d, 1h), baut die Barriere-Trainingsbeispiele
-mit Multi-Timeframe-Kontext, prüft die
-Robustheit über 8 chronologische Walk-Forward-Fenster, trainiert das finale Modell auf dem
-offiziellen 70/30-Split, speichert:
+Fragt optional `history_days`-Override und ob der OHLCV-Cache verworfen werden soll, ruft dann
+`train_barrier_model.py` auf: lädt (gecachte) OHLCV-Daten für `reference_timeframe` +
+`intraday_timeframe` + `context_timeframes` (Standard: 4h, 15m, 1M, 1w, 1d, 1h), baut die
+Barriere-Trainingsbeispiele mit Multi-Timeframe-Kontext, prüft die Robustheit über 7-8
+chronologische Walk-Forward-Fenster, trainiert das finale Modell auf dem offiziellen
+70/30-Split, speichert:
 - `artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl` (**git-getrackt**, ~120KB)
 - `artifacts/datasets/barrier_BTC_USDT_USDT_4h.jsonl` (Trainingsdaten-Cache, nicht in Git)
 - `artifacts/datasets/barrier_diagnostics_BTC_USDT_USDT_4h.json` (Kennzahlen dieses Laufs)
 
-`--no-cache` erzwingt einen frischen OHLCV-Download. `--history-days N` überschreibt die
-Konfiguration (Debugging).
+Zeigt am Ende automatisch die Zusammenfassung (wie `show_results.sh` Modus 1).
 
-#### 2. Live-Prognose (manuell testen)
+#### 2. Ergebnisse ansehen
+
+```bash
+./show_results.sh
+```
+
+Drei Modi:
+1. **Zusammenfassung** — Trainings-Diagnose (Walk-Forward, In-Sample/Out-of-Sample) +
+   vollständiger Anti-Martingale-Backtest inkl. Gebühren (siehe [Konfiguration](#konfiguration-settingsjson):
+   `backtest_start_capital`/`taker_fee_rate_pct`), direkt in der Konsole.
+2. **Chart aktualisieren** — `artifacts/charts/combined_overview.png` (Preis+Trades,
+   Kapitalkurve, laufende Gewinn-/Verlust-Serien).
+3. **Excel-Export** — `artifacts/charts/oraclebot_trades_<Zeitstempel>.xlsx`, optional gefiltert
+   auf Trades ab einem Startdatum (Kapitalkurve startet dann frisch bei
+   `backtest_start_capital`, nicht mit dem alten Compounding-Stand fortgesetzt).
+
+Beide Skripte brauchen ein lokales `.venv` (`./install.sh`) und laufen NICHT auf dem VPS — das
+Modell ist git-getrackt, der VPS braucht kein eigenes Training (siehe
+[VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)).
+
+#### 3. Live-Prognose (manuell testen)
 
 ```bash
 PYTHONPATH=src python scripts/predict_next_barrier.py --force
 ```
 
-`--force` überspringt das 4h-Zeitfenster-Gate (für manuelles Testen zu beliebiger Uhrzeit,
-markiert die Periode NICHT als erledigt). Holt Marktdaten über einen inkrementellen lokalen
-Cache, lädt das trainierte Modell, gibt Vorhersage + Handelssignal aus, sendet bei
-`telegram_enabled=true` zusätzlich eine Telegram-Nachricht.
+Kein interaktives `.sh`-Wrapper-Skript dafür (läuft normalerweise unbeaufsichtigt per Cron,
+siehe unten) — `--force` überspringt das 4h-Zeitfenster-Gate (für manuelles Testen zu beliebiger
+Uhrzeit, markiert die Periode NICHT als erledigt). Holt Marktdaten über einen inkrementellen
+lokalen Cache, lädt das trainierte Modell, gibt Vorhersage + Handelssignal aus, sendet bei
+`telegram_enabled=true` zusätzlich eine Telegram-Nachricht. **Achtung:** bei
+`live_trading_enabled=true` platziert ein Signal ≥ `min_confidence` dabei eine ECHTE Order,
+`--force` hebt nur das Zeitfenster-Gate auf, nicht das Live-Trading selbst.
 
 ---
 
@@ -440,6 +481,7 @@ crontab -l                                                          # Aktuellen 
 cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_barrier.py --force   # Manueller Testlauf
 PYTHONPATH=src python -m pytest tests/                              # Tests ausfuehren
 ./update.sh                                                         # Bot aktualisieren
+./show_results.sh                                                   # Ergebnisse/Chart/Excel (nur lokal, nicht auf dem VPS)
 ```
 
 #### Cronjob zeigt `FileNotFoundError` / veraltete Fehlermeldungen nach einem Update
@@ -468,7 +510,7 @@ live mitverfolgt.
 #### Neu trainieren (nur auf der Trainings-Maschine, nicht auf dem VPS)
 
 ```bash
-PYTHONPATH=src python scripts/train_barrier_model.py
+./run_pipeline.sh
 git add artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl settings.json
 git commit -m "Retrain: ..." && git push
 # Danach auf dem VPS: ./update.sh

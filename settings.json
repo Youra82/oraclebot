@@ -17,6 +17,8 @@
         "live_trading_enabled": true,
         "history_days": 1000,
         "val_split": 0.30,
+        "backtest_start_capital": 15.0,
+        "taker_fee_rate_pct": 0.06,
         "num_threads": 12,
         "feature_settings": {
             "atr_window": 14,
