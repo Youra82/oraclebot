@@ -1,7 +1,8 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+import oraclebot.utils.data_fetch as data_fetch_mod
 from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 
 SYMBOL = 'BTC/USDT:USDT'
@@ -118,3 +119,69 @@ def test_cache_file_is_written_after_fetch(tmp_path):
     assert cache_path.exists()
     reloaded = pd.read_pickle(cache_path)
     assert len(reloaded) == 5
+
+
+def _make_mock_exchange(fetch_responses, now_ms, timeframe_seconds):
+    """fetch_responses: Liste von Kerzen-Listen -- jeder exchange.fetch_ohlcv()-Aufruf liefert
+    das naechste Element (leere Liste, sobald die Liste erschoepft ist)."""
+    exchange = MagicMock()
+    exchange.load_markets.return_value = None
+    exchange.parse_timeframe.return_value = timeframe_seconds
+    exchange.milliseconds.return_value = now_ms
+    exchange.rateLimit = 0
+    call_iter = iter(fetch_responses)
+    exchange.fetch_ohlcv.side_effect = lambda *a, **k: next(call_iter, [])
+    return exchange
+
+
+def test_fetch_ohlcv_retries_whole_fetch_on_drastic_shortfall(monkeypatch):
+    """Regression 2026-07-26: Bitgets 1M-Endpunkt lieferte auf einem VPS zweimal in Folge nur
+    1 von 50 angefragten Kerzen, obwohl derselbe Request von einem anderen Rechner aus
+    zuverlaessig 50+ lieferte -- sieht nach einem anhaltenden Rate-Limit/Routing-Problem aus,
+    nicht nach einem einzelnen Netzwerk-Hickser (den die bestehenden Chunk-Retries schon
+    abfangen). fetch_ohlcv() muss den KOMPLETTEN Fetch automatisch wiederholen, wenn das
+    Ergebnis drastisch kuerzer als angefragt ist UND `since` noch weit von "jetzt" entfernt war
+    (sonst waere ein knappes Ergebnis normal, z.B. bei einer inkrementellen Nachfrage mit nur
+    wenigen neuen Kerzen seit dem letzten Cache-Stand)."""
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+
+    timeframe_seconds = 30 * 24 * 60 * 60  # '1M'
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+
+    # Erster Versuch: genau 1 Kerze, dann dreimal leer -> Abbruch (reproduziert die 1/50-Situation).
+    first_candle = [now_ms - 9999 * timeframe_ms, 1.0, 1.0, 1.0, 1.0, 1.0]
+    bad_exchange = _make_mock_exchange([[first_candle], [], [], []], now_ms, timeframe_seconds)
+
+    # Zweiter Versuch: liefert die volle angefragte Menge in einem Rutsch.
+    good_candles = [[now_ms - (9999 - i) * timeframe_ms, 1.0, 1.0, 1.0, 1.0, 1.0] for i in range(50)]
+    good_exchange = _make_mock_exchange([good_candles, []], now_ms, timeframe_seconds)
+
+    exchange_ctor = MagicMock(side_effect=[bad_exchange, good_exchange])
+    monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', exchange_ctor)
+
+    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1M', limit=50, since_ms=0)
+
+    assert exchange_ctor.call_count == 2  # genau ein Ganz-Fetch-Retry ausgeloest
+    assert len(df) == 50
+
+
+def test_fetch_ohlcv_does_not_retry_when_shortfall_is_near_now(monkeypatch):
+    """Ein knappes Ergebnis nahe 'jetzt' (z.B. inkrementelle Nachfrage mit wenig Neuem seit dem
+    letzten Cache-Stand) ist normal und darf KEINEN Ganz-Fetch-Retry ausloesen."""
+    monkeypatch.setattr(data_fetch_mod.time, 'sleep', lambda s: None)
+
+    timeframe_seconds = 60 * 60  # '1h'
+    timeframe_ms = timeframe_seconds * 1000
+    now_ms = 10_000 * timeframe_ms
+    since_ms = now_ms - timeframe_ms  # nur 1 Timeframe-Schritt in der Vergangenheit -> near_now
+
+    one_candle = [since_ms + 1, 1.0, 1.0, 1.0, 1.0, 1.0]
+    exchange = _make_mock_exchange([[one_candle], []], now_ms, timeframe_seconds)
+    exchange_ctor = MagicMock(side_effect=[exchange])
+    monkeypatch.setattr(data_fetch_mod.ccxt, 'bitget', exchange_ctor)
+
+    df = data_fetch_mod.fetch_ohlcv(SYMBOL, '1h', limit=50, since_ms=since_ms)
+
+    assert exchange_ctor.call_count == 1  # kein Retry
+    assert len(df) == 1

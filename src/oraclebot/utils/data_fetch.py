@@ -37,8 +37,12 @@ def _finish_progress():
         sys.stdout.flush()
 
 
+FULL_FETCH_RETRY_LIMIT = 2
+FULL_FETCH_SHORTFALL_RATIO = 0.5
+
+
 def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str = 'bitget',
-                 since_ms: int = None) -> pd.DataFrame:
+                 since_ms: int = None, _retry_count: int = 0) -> pd.DataFrame:
     """Laedt die letzten `limit` Kerzen fuer `symbol`/`timeframe` ueber die oeffentliche ccxt-API.
 
     Paginiert vorwaerts ab einem berechneten Startzeitpunkt (statt rueckwaerts anhand
@@ -49,6 +53,9 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
     `since_ms`: optionaler expliziter Startzeitpunkt (ms seit Epoch), z.B. fuer inkrementelle
     Updates ab dem letzten Cache-Stand (siehe fetch_ohlcv_incremental()) -- ueberschreibt die
     sonst aus `limit` berechnete Startzeit.
+
+    `_retry_count`: intern (nicht fuer Aufrufer gedacht) -- zaehlt Komplett-Fetch-Wiederholungen,
+    siehe die Ganz-Fetch-Retry-Logik am Ende der Funktion.
     """
     exchange = getattr(ccxt, exchange_id)({'options': {'defaultType': 'swap'}, 'enableRateLimit': True})
     exchange.load_markets()
@@ -119,6 +126,27 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
 
     if all_ohlcv:
         _finish_progress()
+
+    # Ganz-Fetch-Retry bei drastischem Rueckstand: die per-Chunk-Retries oben (3x, kurzer
+    # Backoff) fangen einzelne transiente Ausreisser ab, helfen aber nichts, wenn Bitget fuer
+    # eine komplette Session konsequent nur einen Bruchteil der Historie liefert (beobachtet
+    # 2026-07-26: 1M brach zweimal in Folge auf demselben VPS bei 1/50 Kerzen ab, waehrend
+    # derselbe Request von einem anderen Rechner aus zuverlaessig 50+ lieferte -- sieht nach
+    # einem laenger anhaltenden Rate-Limit/Routing-Problem aus, nicht nach einem einzelnen
+    # Hickser). Nur wenn `since` noch WEIT von "jetzt" entfernt ist -- sonst ist ein knappes
+    # Ergebnis normal (z.B. inkrementelle Nachfrage mit nur wenigen neuen Kerzen seit dem
+    # letzten Cache-Stand, kein Fehler).
+    caught_up_to_now = (now_ms - since) < (timeframe_ms * 2)
+    if (not caught_up_to_now and len(all_ohlcv) < limit * FULL_FETCH_SHORTFALL_RATIO
+            and _retry_count < FULL_FETCH_RETRY_LIMIT):
+        wait_s = 15 * (_retry_count + 1)
+        logger.warning(f"{symbol} {timeframe}: nur {len(all_ohlcv)}/{limit} Kerzen erhalten, "
+                        f"`since` noch weit von jetzt entfernt -- vermutlich anhaltendes "
+                        f"Rate-Limit/Routing-Problem statt einzelnem Hickser. Kompletter "
+                        f"Neuversuch {_retry_count + 1}/{FULL_FETCH_RETRY_LIMIT} in {wait_s}s...")
+        time.sleep(wait_s)
+        return fetch_ohlcv(symbol, timeframe, limit=limit, exchange_id=exchange_id,
+                            since_ms=since_ms, _retry_count=_retry_count + 1)
 
     if not all_ohlcv:
         return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
