@@ -556,34 +556,30 @@ vollständigen Lauf (mit echter Vorhersage + Telegram-Nachricht) gibt es dann be
 echten 4h-Fenster (00/04/08/12/16/20 UTC) zu sehen, am besten mit `tail -f logs/cron.log`
 live mitverfolgt.
 
-#### Training schlägt mit `compute_features() lieferte 0 Zeilen` fehl
+#### Training schlägt mit `compute_features() lieferte 0 Zeilen` fehl (historisch, siehe Fix unten)
 
-Passiert, wenn Bitget für einen Kontext-Timeframe (meist `1M`, manchmal `1w`) bei einem
-Komplettabruf deutlich weniger Historie zurückgibt als angefragt — beobachtet 2026-07-26: nur 1
-von 50 angefragten `1M`-Kerzen, auf einem VPS zweimal in Folge. Zu wenig für das Feature-Warmup,
-also liefert `compute_features()` für diesen Timeframe 0 Zeilen. `train_barrier_model.py` meldet
-das klar (`RuntimeError: Kontext-Timeframe '1M': compute_features() lieferte 0 Zeilen ...`)
-statt mit einer kryptischen pandas-`MergeError` abzustürzen (Fix `97d867e`).
+Trat auf, wenn Bitget für den Kontext-Timeframe `1M` bei einem Komplettabruf deutlich weniger
+Historie zurückgab als angefragt — beobachtet 2026-07-26: nur 1 von 50 angefragten `1M`-Kerzen,
+auf einem VPS **drei Läufe in Folge**, obwohl derselbe Request von anderen Maschinen aus
+zuverlässig 49+ Kerzen lieferte — ein maschinenspezifisches Rate-Limit-/Routing-Problem
+speziell für Bitgets `1M`-Endpunkt, nicht behebbar durch reine Chunk-Retries (die einzelne
+Aussetzer abfangen) oder Ganz-Fetch-Retries (die ein anhaltendes Problem nicht umgehen können,
+wenn der Endpunkt selbst konsequent versagt).
 
-**Automatischer Schutz (seit Commit danach):** `fetch_ohlcv()` erkennt einen drastischen
-Rückstand (< 50% der angefragten Menge, `since` noch weit von "jetzt" entfernt — sonst wäre ein
-knappes Ergebnis normal, z.B. bei einer inkrementellen Nachfrage) und wiederholt den
-**kompletten** Fetch automatisch bis zu 2x mit steigender Pause (15s/30s), bevor aufgegeben
-wird — die bestehenden Chunk-Retries (3x, kurzer Backoff) fangen nur einzelne transiente
-Aussetzer ab, nicht ein länger anhaltendes Rate-Limit/Routing-Problem wie das beobachtete.
+**Endgültiger Fix (Commit `1a94ea1`+): `1M` wird gar nicht mehr direkt bei Bitget abgefragt.**
+`fetch_all_timeframes()` leitet `1M`-Kerzen stattdessen per `resample_ohlcv()` aus den (deutlich
+zuverlässiger ladbaren) `1d`-Kerzen ab — inhaltlich äquivalent zu Bitgets eigener Monatskerze
+(OHLCV-Standardaggregation: open=erste, high=max, low=min, close=letzte, volume=Summe), aber
+ohne den fehleranfälligen zusätzlichen API-Call. `1d` wird dafür automatisch mitgeladen, auch
+wenn es nicht explizit in `context_timeframes` steht. Verifiziert: kompletter Neustart auf
+einer zuvor betroffenen Konfiguration lief danach fehlerfrei durch (34 aus `1d` abgeleitete
+`1M`-Kerzen, keine Bitget-`1M`-Anfrage im Log).
 
-**Falls es trotzdem fehlschlägt** (alle Retries erschöpft): `fetch_all_timeframes()` (genutzt
-von `train_barrier_model.py`, anders als `predict_next_barrier.py`s
-`fetch_ohlcv_incremental()`) hat keine Nachbesserung bei zu kurzem CACHE — ein einmal
-geschriebener zu kurzer `ohlcv_<symbol>_<tf>_<limit>.pkl`-Cache bleibt liegen, bis er manuell
-gelöscht wird. Ein erneuter `./run_pipeline.sh`-Lauf (auch mit "komplett neu anfangen") reicht
-dann NICHT automatisch. Fix: gezielt nur die betroffene Cache-Datei löschen (Dateiname aus der
-Fehlermeldung bzw. den Log-Zeilen davor ablesen), dann neu starten:
-
-```bash
-rm artifacts/datasets/ohlcv_BTC_USDT_USDT_1M_50.pkl   # Dateiname ggf. anpassen
-./run_pipeline.sh   # bei der Cache-Frage "n" -- nur der fehlende Timeframe wird neu geholt
-```
+Falls doch nochmal ein `compute_features() lieferte 0 Zeilen`-Fehler für einen ANDEREN
+Kontext-Timeframe auftritt (z.B. `1w`, bisher nicht beobachtet): die Fehlermeldung nennt den
+betroffenen Timeframe explizit. Notfalls dessen Cache-Datei gezielt löschen
+(`artifacts/datasets/ohlcv_<symbol>_<tf>_<limit>.pkl`) und `./run_pipeline.sh` erneut laufen
+lassen (bei der Cache-Frage "j", nur für diesen einen fehlenden Timeframe nötig).
 
 #### Neu trainieren (nur auf der Trainings-Maschine, nicht auf dem VPS)
 

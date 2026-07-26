@@ -1,9 +1,10 @@
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 import oraclebot.utils.data_fetch as data_fetch_mod
-from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
+from oraclebot.utils.data_fetch import fetch_all_timeframes, fetch_ohlcv_incremental, resample_ohlcv
 
 SYMBOL = 'BTC/USDT:USDT'
 
@@ -185,3 +186,67 @@ def test_fetch_ohlcv_does_not_retry_when_shortfall_is_near_now(monkeypatch):
 
     assert exchange_ctor.call_count == 1  # kein Retry
     assert len(df) == 1
+
+
+def make_daily_df(n_days, start='2024-01-01'):
+    idx = pd.date_range(start, periods=n_days, freq='D', tz='UTC')
+    closes = [100.0 + i * 0.1 for i in range(n_days)]
+    return pd.DataFrame({
+        'open': closes, 'high': [c + 1 for c in closes], 'low': [c - 1 for c in closes],
+        'close': closes, 'volume': [10.0] * n_days,
+    }, index=idx)
+
+
+def test_resample_ohlcv_aggregates_daily_into_monthly():
+    """Regression 2026-07-26: '1M' wird nicht mehr direkt von Bitget abgefragt, sondern per
+    Resampling aus '1d' abgeleitet -- muss die ueblichen OHLCV-Aggregationsregeln einhalten."""
+    daily = make_daily_df(65, start='2024-01-01')  # Jan (31) + Feb (29, Schaltjahr) + 5 Tage Maerz
+    monthly = resample_ohlcv(daily, '1M')
+
+    assert list(monthly.index) == [pd.Timestamp('2024-01-01', tz='UTC'),
+                                    pd.Timestamp('2024-02-01', tz='UTC'),
+                                    pd.Timestamp('2024-03-01', tz='UTC')]
+    jan = daily.loc['2024-01-01':'2024-01-31']
+    assert monthly.loc['2024-01-01', 'open'] == jan['open'].iloc[0]
+    assert monthly.loc['2024-01-01', 'close'] == jan['close'].iloc[-1]
+    assert monthly.loc['2024-01-01', 'high'] == jan['high'].max()
+    assert monthly.loc['2024-01-01', 'low'] == jan['low'].min()
+    assert monthly.loc['2024-01-01', 'volume'] == jan['volume'].sum()
+
+
+def test_resample_ohlcv_rejects_unmapped_timeframe():
+    with pytest.raises(ValueError):
+        resample_ohlcv(make_daily_df(10), '15m')
+
+
+def test_fetch_all_timeframes_derives_1M_from_1d_without_direct_fetch(tmp_path):
+    """'1M' darf NIE mehr direkt bei Bitget angefragt werden (siehe resample_ohlcv-Begruendung)
+    -- fetch_all_timeframes() muss stattdessen automatisch '1d' mitladen und daraus ableiten."""
+    daily = make_daily_df(400, start='2024-01-01')
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = daily
+        result = fetch_all_timeframes(SYMBOL, ['1M', '1h'], history_days=400,
+                                       cache_dir=str(tmp_path), use_cache=False)
+
+    fetched_timeframes = [call.args[1] for call in mock_fetch.call_args_list]
+    assert '1M' not in fetched_timeframes
+    assert '1d' in fetched_timeframes  # automatisch mitgeladen fuer die Ableitung
+    assert '1h' in fetched_timeframes
+
+    assert '1M' in result
+    assert len(result['1M']) > 0
+    # '1d' war nicht explizit angefragt -- soll nicht unnoetig im Ergebnis auftauchen.
+    assert '1d' not in result
+
+
+def test_fetch_all_timeframes_keeps_1d_in_result_if_explicitly_requested(tmp_path):
+    daily = make_daily_df(400, start='2024-01-01')
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = daily
+        result = fetch_all_timeframes(SYMBOL, ['1M', '1d'], history_days=400,
+                                       cache_dir=str(tmp_path), use_cache=False)
+
+    assert '1d' in result
+    assert '1M' in result

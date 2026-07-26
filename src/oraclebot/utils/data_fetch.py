@@ -240,18 +240,49 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
     return df
 
 
+RESAMPLE_FREQ = {'1M': 'MS'}  # Kalender-Monatsanfang, passend zu Bitgets eigener '1M'-Konvention
+
+
+def resample_ohlcv(df: pd.DataFrame, target_timeframe: str) -> pd.DataFrame:
+    """Leitet eine groebere Zeitebene (aktuell nur '1M') aus einer feineren, bereits geladenen
+    OHLCV-DataFrame (z.B. '1d') per Resampling ab, statt Bitgets eigenen Endpunkt fuer diese
+    Zeitebene direkt abzufragen.
+
+    Grund: Bitgets '1M'-Endpunkt lieferte auf einem VPS wiederholt (mehrfach in Folge, auch mit
+    Ganz-Fetch-Retries) nur einen Bruchteil (1/50) der angefragten Historie, waehrend '1d' auf
+    exakt derselben Maschine zuverlaessig die volle angefragte Menge lieferte -- ein
+    maschinenspezifisches Rate-Limit-/Routing-Problem speziell fuer diesen einen Endpunkt
+    (2026-07-26). Rechnerisch entspricht das Ergebnis den ueblichen OHLCV-Aggregationsregeln
+    (open=erste, high=max, low=min, close=letzte, volume=Summe) -- inhaltlich aequivalent zu
+    Bitgets eigener Monatskerze, nur ohne den fehleranfaelligen zusaetzlichen API-Call.
+    """
+    if target_timeframe not in RESAMPLE_FREQ:
+        raise ValueError(f"resample_ohlcv: kein Frequenz-Mapping fuer '{target_timeframe}'.")
+    resampled = df.resample(RESAMPLE_FREQ[target_timeframe]).agg({
+        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum',
+    })
+    return resampled.dropna(subset=['open'])
+
+
 def fetch_all_timeframes(symbol: str, timeframes: list, history_days: int, cache_dir: str = None,
                           use_cache: bool = True) -> dict:
     """Laedt OHLCV fuer alle Timeframes eines Symbols, mit optionalem Datei-Cache.
 
     Der volle Mehr-Timeframe-Fetch (v.a. 15m ueber hunderte Tage) dauert mehrere Minuten -- ein
-    Cache erspart das erneute Fetchen bei wiederholten Trainings-/Live-Laeufen. Wird sowohl von
-    train_barrier_model.py als auch von predict_next_barrier.py genutzt, damit beide denselben
-    Cache treffen.
+    Cache erspart das erneute Fetchen bei wiederholten Trainings-Laeufen. Wird von
+    train_barrier_model.py und show_results.py genutzt, damit beide denselben Cache treffen.
+
+    '1M' wird NICHT direkt von Bitget abgefragt, sondern per resample_ohlcv() aus '1d'
+    abgeleitet (siehe dortige Begruendung) -- '1d' wird dafuer automatisch mitgeladen, auch
+    wenn es nicht explizit in `timeframes` angefragt wurde.
     """
     ohlcv_by_timeframe = {}
     safe_symbol = symbol.replace('/', '_').replace(':', '_')
-    for tf in timeframes:
+    fetch_targets = [tf for tf in timeframes if tf != '1M']
+    if '1M' in timeframes and '1d' not in fetch_targets:
+        fetch_targets.append('1d')
+
+    for tf in fetch_targets:
         limit = max(50, int(history_days * 24 * 60 / TIMEFRAME_MINUTES[tf]))
         cache_path = os.path.join(cache_dir, f"ohlcv_{safe_symbol}_{tf}_{limit}.pkl") if cache_dir else None
 
@@ -265,4 +296,13 @@ def fetch_all_timeframes(symbol: str, timeframes: list, history_days: int, cache
             if cache_path:
                 df.to_pickle(cache_path)
         ohlcv_by_timeframe[tf] = df
+
+    if '1M' in timeframes:
+        derived = resample_ohlcv(ohlcv_by_timeframe['1d'], '1M')
+        logger.info(f"{symbol} 1M: {len(derived)} Kerzen aus '1d' abgeleitet (kein Bitget-Direktabruf) -- "
+                    f"{derived.index[0]} bis {derived.index[-1]}" if len(derived) else f"{symbol} 1M: 0 Kerzen abgeleitet.")
+        ohlcv_by_timeframe['1M'] = derived
+        if '1d' not in timeframes:
+            del ohlcv_by_timeframe['1d']
+
     return ohlcv_by_timeframe

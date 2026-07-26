@@ -53,11 +53,13 @@ fi
 # Live-Zustand (artifacts/state/anti_martingale_state.json) -- der wird hier bewusst nicht
 # angefasst, auch wenn live_trading_enabled aktiv ist.
 #
-# WICHTIG (2026-07-26 auf einem VPS beobachtet): den OHLCV-Cache NICHT automatisch mitloeschen.
-# Bitgets 1M-Endpunkt liefert bei einem kompletten Kaltstart-Abruf manchmal nur einen Bruchteil
-# der angefragten Historie (z.B. 1 von 50 Kerzen) -- zu wenig fuers Feature-Warmup, das Training
-# bricht dann ab (siehe README-Troubleshooting). Modell-Reset und OHLCV-Neuabruf sind daher zwei
-# UNABHAENGIGE Fragen, damit ein "kompletter Neustart" nicht automatisch dieses Risiko ausloest.
+# Modell-Reset und OHLCV-Neuabruf sind bewusst zwei UNABHAENGIGE Fragen (nicht wie zuerst
+# umgesetzt gekoppelt): ein "kompletter Neustart" soll nicht automatisch einen riskanten
+# Komplett-Neuabruf aller Timeframes erzwingen. Historischer Grund (2026-07-26, mittlerweile
+# behoben, siehe README-Troubleshooting): Bitgets '1M'-Endpunkt lieferte auf einem VPS
+# wiederholt nur einen Bruchteil der angefragten Historie -- '1M' wird deshalb inzwischen gar
+# nicht mehr direkt abgefragt, sondern aus '1d' abgeleitet (siehe data_fetch.py). Die
+# Entkopplung bleibt trotzdem sinnvoll als generelle Vorsichtsmassnahme.
 echo ""
 echo -e "${CYAN}ℹ  Hinweis: oraclebot hat keine Datenbank und kein inkrementelles Lernen -- jedes${NC}"
 echo -e "${CYAN}   Training ist ohnehin ein kompletter Neustart. \"Loeschen\" entfernt nur lokale${NC}"
@@ -74,9 +76,6 @@ else
 fi
 
 echo ""
-echo -e "${CYAN}ℹ  Achtung: Bitgets 1M-Endpunkt liefert bei einem kompletten Kaltstart-Abruf manchmal${NC}"
-echo -e "${CYAN}   deutlich weniger Historie als angefragt -- kann das Training abbrechen lassen${NC}"
-echo -e "${CYAN}   (siehe README-Troubleshooting). Im Zweifel hier \"n\" lassen.${NC}"
 read -p "Gecachte OHLCV-Daten ignorieren und frisch abrufen? (j/n) [Standard: n]: " NO_CACHE
 NO_CACHE="${NO_CACHE//[$'\r\n ']/}"
 CACHE_ARG=""
