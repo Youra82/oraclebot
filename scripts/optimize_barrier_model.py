@@ -62,6 +62,10 @@ def select_best_max_depth(examples: list, n_folds: int = 8) -> dict:
     logger.info('=' * 70)
     results = []
     for depth in MAX_DEPTH_CANDIDATES:
+        # Kein Fortschrittsbalken hier (jeder Fold-Fit dauert je nach CPU Sekunden bis Minuten) --
+        # ohne diese Zeile sieht ein Nutzer, der live zuschaut, minutenlang gar nichts (auf einem
+        # langsameren VPS beobachtet 2026-07-26).
+        logger.info(f"  Rechne depth={depth} ({n_folds - 1} Walk-Forward-Fenster)...")
         wf = evaluate_walk_forward(examples, n_folds=n_folds, max_depth=depth)
         results.append({'max_depth': depth, **wf})
         logger.info(f"  depth={depth}: Mittel={wf['mean']:.1%} Worst-Case={wf['worst_case']:.1%}")
@@ -125,6 +129,9 @@ def select_anti_martingale(wf_preds: list, barrier_cfg: dict, min_confidence: fl
     results = []
     for streak_target in STREAK_TARGET_CANDIDATES:
         for growth_factor in GROWTH_FACTOR_CANDIDATES:
+            # Jede Kombination lost tausende Bootstrap-Trade-Sequenzen (22 Bisektionsschritte +
+            # finale Praezisionsrunde) -- ohne diese Zeile bleibt die Konsole minutenlang leer.
+            logger.info(f"  Rechne streak={streak_target} growth={growth_factor:.1f}...")
             calib = calibrate_anti_martingale_base_pct(
                 trades, barrier_cfg, growth_factor, streak_target,
                 dd_percentile=dd_percentile, dd_limit=dd_limit)
