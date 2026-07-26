@@ -22,6 +22,7 @@ from oraclebot.data.features import FEATURE_NAMES
 from oraclebot.data.scaler import FeatureScaler
 from oraclebot.model.barrier_model import BarrierPredictor
 from oraclebot.utils.data_fetch import fetch_all_timeframes
+from oraclebot.utils import training_history
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..')
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'datasets')
@@ -128,3 +129,9 @@ if __name__ == '__main__':
             'walk_forward_worst_case': wf['worst_case'],
         }, f, indent=2)
     logger.info(f"Diagnose gespeichert: {diagnostics_path}")
+
+    history_path = os.path.join(ARTIFACTS_DIR, f"training_history_{symbols_tag}_{reference_tf}.jsonl")
+    training_history.append_entry(history_path, barrier_cfg, val_acc, wf['mean'], wf['worst_case'])
+    warning = training_history.check_overfitting_risk(history_path)
+    if warning:
+        logger.warning(f"\n{warning}")

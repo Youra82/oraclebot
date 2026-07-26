@@ -108,7 +108,25 @@ def build_barrier_examples(ohlcv_by_timeframe: dict, reference_timeframe: str, i
     if context_timeframes:
         ref_ts_df = pd.DataFrame(index=pd.DatetimeIndex(joined_index).rename('ts')).reset_index()
         for tf in context_timeframes:
-            right = feats_for(tf).rename_axis('ts').reset_index()
+            context_feat = feats_for(tf)
+            if context_feat.empty:
+                # compute_features() auf einer (fast) leeren OHLCV-DataFrame liefert 0 Zeilen --
+                # dann hat das leere Ergebnis KEINEN DatetimeIndex mehr (pandas faellt auf einen
+                # generischen int64-Index zurueck), was merge_asof() weiter unten mit einem
+                # kryptischen "incompatible merge keys ... datetime64 and int64"-Fehler tief in
+                # pandas-Internals crashen liesse. Stattdessen hier fruehzeitig klar melden --
+                # typischer Ausloeser: ein --no-cache-Komplettabruf, bei dem Bitget fuer sehr
+                # grobe Zeitebenen (v.a. 1M) weniger Historie zurueckgibt als angefragt (siehe
+                # data_fetch.py) und die Kerzenanzahl unter das Feature-Warmup faellt.
+                n_raw = len(ohlcv_by_timeframe.get(tf, []))
+                raise RuntimeError(
+                    f"Kontext-Timeframe '{tf}': compute_features() lieferte 0 Zeilen "
+                    f"({n_raw} Rohkerzen verfuegbar -- reicht nicht fuers Feature-Warmup). "
+                    f"Haeufigste Ursache: ein --no-cache-Komplettabruf, bei dem Bitget fuer "
+                    f"'{tf}' weniger Historie zurueckgab als angefragt. Cache NICHT loeschen "
+                    f"und erneut versuchen, oder '{tf}' vorlaeufig aus context_timeframes "
+                    f"in settings.json entfernen.")
+            right = context_feat.rename_axis('ts').reset_index()
             merged = pd.merge_asof(ref_ts_df, right, on='ts', direction='backward')
             context_merged[tf] = merged.set_index('ts')[FEATURE_NAMES]
 

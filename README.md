@@ -108,12 +108,14 @@ oraclebot/
         ├── data_fetch.py          # Oeffentlicher OHLCV-Download (ccxt, Bitget)
         ├── exchange.py            # Authentifizierter Bitget-Wrapper (Live-Order-Platzierung)
         ├── barrier_gate.py        # 4h-Zeitfenster + Perioden-Marker (Doppel-Versand-Schutz)
+        ├── training_history.py    # Protokolliert Trainingslaeufe, warnt bei Parameter-Tuning-Overfitting-Risiko
         └── telegram.py            # send_message/send_photo
 
 artifacts/
 ├── datasets/
 │   ├── barrier_model_BTC_USDT_USDT_4h.pkl   # Trainiertes Modell (GIT-GETRACKT, ~120KB)
 │   ├── barrier_diagnostics_*.json            # Diagnose des letzten Trainingslaufs (nicht in Git)
+│   ├── training_history_*.jsonl              # Verlauf aller Trainingslaeufe (nicht in Git)
 │   └── *.jsonl / ohlcv_*.pkl                 # Trainingsdaten-Cache (NICHT in Git, jederzeit neu baubar)
 ├── charts/                          # show_results.py --chart/--excel Ausgabe (nicht in Git)
 │   ├── combined_overview.png        # Preis+Trades / Kapitalkurve / Serien-Chart
@@ -573,6 +575,16 @@ live mitverfolgt.
   demselben Symbol wiederverwenden.
 - Aktuell **BTC-only** — ein zweites, unabhängig getestetes Symbol (ETH) zeigte deutlich
   schwächere Signalqualität (52.6% statt 79.9% Winrate) und wurde verworfen.
+- **Mensch-im-Loop-Overfitting-Warnung:** `train_barrier_model.py` protokolliert jeden Lauf
+  (Zeitstempel + `min_confidence`/`model_max_depth`/`barrier_pct`/`context_timeframes` +
+  Out-of-Sample-Ergebnis) in `artifacts/datasets/training_history_*.jsonl` (nicht in Git). Bei
+  ≥3 Läufen mit unterschiedlichen Parametern innerhalb von 24h erscheint eine Warnung — Zeichen
+  dafür, dass wiederholt anhand desselben Out-of-Sample-Splits nachjustiert wird, wodurch dieser
+  nicht mehr wirklich "ungesehen" ist. Anders als z.B. probebots Optuna-Optimizer (der Trials
+  akkumuliert und deshalb eine harte `--force`-Sperre hat) macht `train_barrier_model.py` pro
+  Lauf nur einen einzelnen deterministischen Fit (kein Warm-Start) — reines Retraining auf neuen
+  Daten mit unveränderten Parametern ist normal und löst keine Warnung aus. Blockiert nichts,
+  reine Awareness (siehe `src/oraclebot/utils/training_history.py`).
 - Backtest-PnL bei mehreren hundert Trades und Anti-Martingale-Compounding wird schnell
   astronomisch groß (reines Artefakt exponentiellen Compoundings über viele Trades, ignoriert
   reale Slippage-/Liquiditäts-Grenzen) — als **relativer** Vergleich zwischen Konfigurationen

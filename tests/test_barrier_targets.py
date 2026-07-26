@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from oraclebot.data.barrier_targets import build_barrier_examples, compute_barrier_labels
 
@@ -119,3 +120,26 @@ def test_build_barrier_examples_with_context_timeframes_appends_blocks():
         ctx_ex = with_context_by_ts.get(ex['reference_time'])
         if ctx_ex is not None:
             assert ctx_ex['features'][:ref_feature_len] == ex['features']
+
+
+def test_context_timeframe_with_too_little_history_raises_clear_error():
+    """Regression 2026-07-26: ein Kontext-Timeframe mit zu wenig Rohkerzen fuers Feature-Warmup
+    (z.B. nach einem --no-cache-Komplettabruf, bei dem Bitget fuer sehr grobe Zeitebenen wie 1M
+    weniger Historie zurueckgibt als angefragt) liess compute_features() eine leere DataFrame
+    OHNE DatetimeIndex zurueckgeben -- merge_asof() stuerzte dann tief in pandas-Internals mit
+    einer kryptischen 'incompatible merge keys ... datetime64 and int64'-MergeError ab, statt
+    klar zu sagen, welcher Timeframe das Problem ist. Muss stattdessen einen verstaendlichen
+    RuntimeError werfen."""
+    n = 80
+    ref = make_synthetic_reference_ohlcv(n, freq='4h')
+    intraday = make_intraday_df(
+        [(c - 2.0, c + 2.0) for c in ref['close'] for _ in range(16)],
+        start=ref.index[0] + pd.Timedelta(minutes=15), freq='15min')
+    # Nur 1 Rohkerze fuer den Kontext-Timeframe -- reicht fuer kein Feature-Warmup-Fenster,
+    # compute_features() liefert 0 Zeilen (siehe features.py).
+    starved_context = make_synthetic_reference_ohlcv(1, freq='30D', start='2022-07-01')
+
+    ohlcv = {'4h': ref, '15m': intraday, '1M': starved_context}
+    with pytest.raises(RuntimeError, match='1M'):
+        build_barrier_examples(ohlcv, reference_timeframe='4h', intraday_timeframe='15m',
+                                context_timeframes=['1M'], barrier_pct=1.0)
