@@ -429,6 +429,10 @@ Zeigt am Ende automatisch die Zusammenfassung (wie `show_results.sh` Modus 1).
 ./show_results.sh
 ```
 
+Fragt zuerst nach dem Startkapital (Standard: `backtest_start_capital` aus `settings.json`,
+Enter übernimmt ihn unverändert) — gilt für alle drei Modi gleichermaßen, ohne `settings.json`
+selbst anzufassen (nur für diesen Lauf via `show_results.py --start-capital`).
+
 Drei Modi:
 1. **Zusammenfassung** — Trainings-Diagnose (Walk-Forward, In-Sample/Out-of-Sample) +
    vollständiger Anti-Martingale-Backtest inkl. Gebühren (siehe [Konfiguration](#konfiguration-settingsjson):

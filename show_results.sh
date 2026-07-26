@@ -23,6 +23,15 @@ else
 fi
 export PYTHONPATH="$SCRIPT_DIR/src"
 
+DEFAULT_CAPITAL=$("$PYTHON" -c "import json; print(json.load(open('settings.json'))['barrier_strategy_settings'].get('backtest_start_capital', 15.0))" 2>/dev/null || echo 15.0)
+echo ""
+read -p "Startkapital in USDT [Standard: $DEFAULT_CAPITAL aus settings.json]: " CAPITAL_INPUT
+CAPITAL_INPUT="${CAPITAL_INPUT//[$'\r\n ']/}"
+CAPITAL_ARG=""
+if [[ "$CAPITAL_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    CAPITAL_ARG="--start-capital $CAPITAL_INPUT"
+fi
+
 echo ""
 echo -e "${YELLOW}Was moechtest du sehen?${NC}"
 echo "  1) Zusammenfassung        (Trainings-Diagnose + Anti-Martingale-Backtest, Konsole)"
@@ -33,18 +42,18 @@ MODE="${MODE//[$'\r\n ']/}"
 MODE=${MODE:-1}
 
 if [ "$MODE" == "2" ]; then
-    "$PYTHON" scripts/show_results.py --chart
+    "$PYTHON" scripts/show_results.py --chart $CAPITAL_ARG
 
 elif [ "$MODE" == "3" ]; then
     echo ""
     read -p "Nur Trades ab diesem Datum (JJJJ-MM-TT) [leer = kompletter Out-of-Sample-Zeitraum]: " SINCE_DATE
     SINCE_DATE="${SINCE_DATE//[$'\r\n ']/}"
     if [ -n "$SINCE_DATE" ]; then
-        "$PYTHON" scripts/show_results.py --excel --since "$SINCE_DATE"
+        "$PYTHON" scripts/show_results.py --excel --since "$SINCE_DATE" $CAPITAL_ARG
     else
-        "$PYTHON" scripts/show_results.py --excel
+        "$PYTHON" scripts/show_results.py --excel $CAPITAL_ARG
     fi
 
 else
-    "$PYTHON" scripts/show_results.py
+    "$PYTHON" scripts/show_results.py $CAPITAL_ARG
 fi

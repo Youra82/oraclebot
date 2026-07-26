@@ -383,10 +383,15 @@ if __name__ == '__main__':
     parser.add_argument('--since', type=str, default=None,
                          help="Nur Trades ab diesem Datum (JJJJ-MM-TT) fuer --excel beruecksichtigen. "
                               "Kapitalkurve startet fuer den Export dann frisch bei backtest_start_capital.")
+    parser.add_argument('--start-capital', type=float, default=None,
+                         help="Ueberschreibt barrier_strategy_settings.backtest_start_capital fuer diesen Lauf "
+                              "(betrifft Zusammenfassung, Chart und Excel-Export gleichermassen).")
     args = parser.parse_args()
 
     settings = load_settings()
     barrier_cfg = settings['barrier_strategy_settings']
+    if args.start_capital is not None:
+        barrier_cfg['backtest_start_capital'] = args.start_capital
     preds, safe_symbol = load_predictions(barrier_cfg)
     trades = build_trades(preds, barrier_cfg)
     if not trades:
