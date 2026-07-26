@@ -324,7 +324,7 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 | `barrier_pct` | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. |
 | `model_max_depth` | HistGBM-Baumtiefe. 3 validiert (siehe [Modell](#3-modell-barrier_modelpy)). |
 | `min_confidence` | 0.60 validiert (684 Trades, 80.6% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=5.17` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, nicht nur den einen historisch realisierten Pfad) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-25). |
+| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=4.03` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, **inklusive** Bitget-Taker-Gebühren 0.06%/Seite Roundtrip) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-26). Ohne Gebührenmodell hätte derselbe Bootstrap-Ansatz `base_pct=5.17` ergeben, was mit echten Gebühren aber ein 90.-Perzentil-MaxDD von ~60% statt ~50% bedeutet — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
 | `history_days` | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
 | `feature_settings_by_timeframe` | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
 | `live_trading_enabled` | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
@@ -466,6 +466,26 @@ git commit -m "Retrain: ..." && git push
   astronomisch groß (reines Artefakt exponentiellen Compoundings über viele Trades, ignoriert
   reale Slippage-/Liquiditäts-Grenzen) — als **relativer** Vergleich zwischen Konfigurationen
   bei gleichem Ziel-Drawdown aussagekräftig, als absolute Zahl nicht.
+- **Gründliche Backtest-Analyse (2026-07-26) deckte zwei reale Risiken auf, die die 80.6%-
+  Headline-Winrate relativiert:**
+  - **Zeitliche Drift:** Winrate über den 9-Monats-Validierungszeitraum: erste Hälfte 82.2%,
+    zweite Hälfte 78.9%, letzte 90 Tage 75.9%, letzte 30 Tage 72.9% — ein klarer Abwärtstrend
+    genau bis zum Start des Live-Tests. Immer noch deutlich über der Gebühren-Breakeven-Grenze
+    (56.0%, siehe unten), aber die realistische Erwartung fürs Live-Trading liegt eher bei
+    ~73-76% als bei den über den ganzen Zeitraum gemittelten 80.6%.
+  - **Überanpassungs-Lücke:** In-Sample-Winrate der tatsächlich gehandelten Signale 90.3% vs.
+    Out-of-Sample 80.6% (9.7pp Lücke) — größer als die reine Klassifikations-Accuracy-Lücke aus
+    dem Training (86.4%/76.8%), da die Signal-Filterung (min_confidence) den Effekt verstärkt.
+  - Konfidenz-Kalibrierung ist dagegen sauber monoton (60-65%-Bucket: 62.1% realisierte
+    Winrate; 95-100%-Bucket: 97.3%) und Verlust-Serien sind kurz gedeckelt (max. 3 in Folge,
+    684 Trades) — die Grundarchitektur wirkt nicht kaputt, nur die Headline-Zahl optimistischer
+    als der aktuelle Trend.
+- **Trading-Gebühren fehlten bisher komplett im Backtest.** Bitget-Taker-Gebühr (Standard-Tier,
+  0.06%/Seite) macht bei 100x Hebel ~12% der Brutto-PnL pro Trade aus — keine Kleinigkeit.
+  Breakeven-Winrate MIT Gebühren (SL=TP=1%, 100x): **56.0%** statt 50% ohne Gebühren. Die
+  zuletzt beobachtete reale Winrate (72.9%, letzte 30 Tage) liegt trotzdem mit 16.9pp Puffer
+  komfortabel darüber. `anti_martingale_base_pct` ist seit 2026-07-26 gebührenbewusst
+  kalibriert (siehe [Konfiguration](#konfiguration-settingsjson)).
 - Externe Datenquellen (Funding Rate, Fear & Greed Index, DXY, On-Chain-Metriken,
   News-Sentiment) wurden in einer früheren Projektversion getestet und verworfen — keine
   zeigte einen robusten Effekt.
