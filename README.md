@@ -621,6 +621,7 @@ tail -f logs/cron.log                                               # Live mitve
 grep -i "ERROR" logs/cron.log                                       # Nach Fehlern suchen
 crontab -l                                                          # Aktuellen Cronjob anzeigen
 cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_barrier.py --force   # Manueller Testlauf
+cat src/oraclebot/strategy/configs/config_BTC_USDT_USDT_4h.json     # Aktive Strategie-Config ansehen (min_confidence/model_max_depth/Anti-Martingale)
 PYTHONPATH=src python -m pytest tests/                              # Tests ausfuehren
 ./update.sh                                                         # Bot aktualisieren
 ./show_results.sh                                                   # Ergebnisse/Chart/Excel (nur lokal, nicht auf dem VPS)
