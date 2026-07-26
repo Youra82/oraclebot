@@ -206,12 +206,17 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
     df.to_pickle(cache_path)
 
     if len(df) < min_candles:
-        logger.warning(f"{symbol} {timeframe}: Cache hat nur {len(df)}/{min_candles} Kerzen. "
-                        f"Hole fehlende Historie zusaetzlich nach...")
-        backfill = fetch_ohlcv(symbol, timeframe, limit=min_candles)
-        if len(backfill) > len(df):
-            df = backfill
-            df.to_pickle(cache_path)
+        # KEIN Backfill-Retry mehr (Bugfix 2026-07-26): fetch_ohlcv() hat bereits sein Bestes
+        # versucht, inklusive aktivem Ueberspringen echter Boersen-Datenluecken (siehe
+        # _probe_next_available_ts). Ein Shortfall an dieser Stelle bedeutet fast immer, dass
+        # genau diese Anzahl Kerzen tatsaechlich existiert (der Rest fehlt dauerhaft wegen einer
+        # echten Luecke) -- ein identischer Retry wuerde denselben Fetch samt Luecken-Suche
+        # einfach nochmal komplett wiederholen und dabei mehrere Minuten verschwenden, ohne je
+        # mehr Kerzen zu bekommen (live beobachtet: derselbe "Leere Antwort"/Luecken-Fund
+        # erschien zweimal identisch im Log).
+        logger.info(f"{symbol} {timeframe}: {len(df)}/{min_candles} Kerzen verfuegbar (vermutlich "
+                    f"wegen einer echten Boersen-Datenluecke, siehe ggf. 'uebersprungene Luecke(n)' "
+                    f"oben) -- kein weiterer Nachlade-Versuch.")
 
     return df
 

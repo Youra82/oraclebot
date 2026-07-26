@@ -125,6 +125,24 @@ def test_cache_file_is_written_after_fetch(tmp_path):
     assert len(reloaded) == 5
 
 
+def test_incremental_does_not_retry_when_fetch_ohlcv_already_did_its_best(tmp_path, caplog):
+    """Bugfix 2026-07-26: fetch_ohlcv() versucht bereits selbst aktiv, echte Boersen-Datenluecken
+    zu ueberspringen (siehe _probe_next_available_ts) -- ein Shortfall danach ist fast immer
+    dauerhaft (die fehlenden Kerzen existieren schlicht nicht), nicht transient. Ein identischer
+    Backfill-Retry wuerde denselben teuren Fetch (inkl. erneuter Luecken-Suche) nur nutzlos
+    wiederholen. fetch_ohlcv() darf bei einem Shortfall daher NUR EINMAL aufgerufen werden."""
+    cache_path = tmp_path / 'cache.pkl'
+    short_result = make_cached_df(n=8)  # < min_candles=10 -- simuliert eine dauerhafte Luecke
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = short_result
+        with caplog.at_level('INFO'):
+            df = fetch_ohlcv_incremental(SYMBOL, '1d', min_candles=10, cache_path=str(cache_path))
+
+    assert mock_fetch.call_count == 1  # kein Backfill-Retry
+    assert len(df) == 8
+
+
 def _make_mock_exchange(fetch_responses, now_ms, timeframe_seconds):
     """fetch_responses: Liste von Kerzen-Listen -- jeder exchange.fetch_ohlcv()-Aufruf liefert
     das naechste Element (leere Liste, sobald die Liste erschoepft ist)."""
