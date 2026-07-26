@@ -81,6 +81,7 @@ oraclebot/
 │   └── show_results.py            # Diagnose + Anti-Martingale-Backtest + Chart/Excel-Export
 ├── run_pipeline.sh                # Interaktiv: trainiert das Modell (ruft train_barrier_model.py)
 ├── show_results.sh                # Interaktiv: Zusammenfassung/Chart/Excel (ruft show_results.py)
+├── push_configs.sh                # Modell + settings.json committen/pushen (mit Rebase-Retry)
 ├── install.sh                     # Erstinstallation auf VPS
 ├── update.sh                      # Git-Update (sichert secret.json)
 ├── run_tests.sh                   # Testsuite + Live-Smoke-Test (Gate+Marker)
@@ -425,7 +426,17 @@ Beide Skripte brauchen ein lokales `.venv` (`./install.sh`) und laufen NICHT auf
 Modell ist git-getrackt, der VPS braucht kein eigenes Training (siehe
 [VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)).
 
-#### 3. Live-Prognose (manuell testen)
+#### 3. Modell pushen
+
+```bash
+./push_configs.sh
+```
+
+Committet + pusht `artifacts/datasets/barrier_model_*.pkl` + `settings.json` (mit
+automatischem Rebase-Retry bei Remote-Konflikten, wie bei den anderen Bots) — tut nichts, wenn
+sich an beiden Dateien nichts geändert hat. Auf dem VPS danach `./update.sh`.
+
+#### 4. Live-Prognose (manuell testen)
 
 ```bash
 PYTHONPATH=src python scripts/predict_next_barrier.py --force
@@ -532,10 +543,14 @@ live mitverfolgt.
 
 ```bash
 ./run_pipeline.sh
-git add artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl settings.json
-git commit -m "Retrain: ..." && git push
+./push_configs.sh
 # Danach auf dem VPS: ./update.sh
 ```
+
+`push_configs.sh` (wie bei den anderen Bots) zeigt Trainings-Diagnose + relevante
+`settings.json`-Werte des zu pushenden Standes an, committet `artifacts/datasets/barrier_model_*.pkl`
++ `settings.json` und pusht (mit automatischem Rebase-Retry bei Remote-Konflikten). Ohne
+Änderungen an diesen beiden Dateien tut es nichts.
 
 ---
 
