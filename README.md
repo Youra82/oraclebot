@@ -268,19 +268,8 @@ Bitget, siehe `tests/test_live_workflow.py`):
 
 ### Einrichtung
 
-```bash
-cp secret.json.example secret.json
-nano secret.json
-```
-
-```json
-{
-    "oraclebot": [
-        { "name": "Main-Account", "apiKey": "...", "secret": "...", "password": "..." }
-    ],
-    "telegram": { "bot_token": "...", "chat_id": "..." }
-}
-```
+`secret.json` mit echten `oraclebot`-API-Keys wird bereits bei der [Installation](#installation-)
+angelegt. Für echte Order-Platzierung zusätzlich:
 
 ```bash
 # Erst manuell testen (live_trading_enabled noch false), dann umstellen:
@@ -308,7 +297,7 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": false,
-        "anti_martingale_base_pct": 5.27,
+        "anti_martingale_base_pct": 4.03,
         "anti_martingale_growth_factor": 2.0,
         "anti_martingale_streak_target": 3,
         "live_trading_enabled": false,
@@ -344,15 +333,49 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 
 ---
 
-## Installation (lokal — Training)
+## Installation 🚀
+
+Gilt sowohl lokal (Training, siehe [Workflow](#workflow)) als auch auf dem VPS
+(Live-Deployment, siehe [VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden))
+— dasselbe `install.sh` fuer beide.
+
+#### 1. Projekt klonen
 
 ```bash
 git clone https://github.com/Youra82/oraclebot.git
 cd oraclebot
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp secret.json.example secret.json && nano secret.json   # Telegram (optional)
 ```
+
+#### 2. Installations-Skript ausführen
+
+```bash
+chmod +x install.sh
+bash ./install.sh
+```
+
+Das Skript erstellt die virtuelle Python-Umgebung, installiert alle Abhängigkeiten
+(`requirements.txt`), legt `logs/` an und macht alle `.sh`-Skripte ausführbar.
+
+#### 3. API-Keys eintragen
+
+```bash
+cp secret.json.example secret.json
+nano secret.json
+```
+
+```json
+{
+    "oraclebot": [
+        { "name": "Main-Account", "apiKey": "DEIN_API_KEY", "secret": "DEIN_SECRET", "password": "DEIN_PASSPHRASE" }
+    ],
+    "telegram": { "bot_token": "DEIN_BOT_TOKEN", "chat_id": "DEINE_CHAT_ID" }
+}
+```
+
+`oraclebot`-Keys sind nur für [Live-Trading](#live-trading-echte-order-platzierung) nötig
+(`live_trading_enabled: true`) — für reine Prognosen/Backtests reicht `telegram` (optional).
+Ohne `oraclebot`-Keys bricht `predict_next_barrier.py` bei aktiviertem Live-Trading kontrolliert
+mit einer klaren Fehlermeldung ab, statt undefiniert zu scheitern.
 
 ---
 
@@ -422,11 +445,9 @@ lokalen Cache, lädt das trainierte Modell, gibt Vorhersage + Handelssignal aus,
 
 #### 1. Installation
 
-```bash
-git clone https://github.com/Youra82/oraclebot.git && cd oraclebot
-./install.sh
-cp secret.json.example secret.json && nano secret.json
-```
+Wie unter [Installation](#installation-) beschrieben (`git clone` → `./install.sh` →
+`secret.json` befüllen) — auf dem VPS zusätzlich mit den echten `oraclebot`-API-Keys, falls
+`live_trading_enabled: true` genutzt werden soll.
 
 #### 2. Cronjob einrichten
 
