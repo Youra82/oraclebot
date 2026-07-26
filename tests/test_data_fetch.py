@@ -4,7 +4,9 @@ import pandas as pd
 import pytest
 
 import oraclebot.utils.data_fetch as data_fetch_mod
-from oraclebot.utils.data_fetch import fetch_all_timeframes, fetch_ohlcv_incremental, resample_ohlcv
+from oraclebot.utils.data_fetch import (
+    TIMEFRAME_MINUTES, fetch_all_timeframes, fetch_ohlcv_incremental, resample_ohlcv,
+)
 
 SYMBOL = 'BTC/USDT:USDT'
 
@@ -250,3 +252,58 @@ def test_fetch_all_timeframes_keeps_1d_in_result_if_explicitly_requested(tmp_pat
 
     assert '1d' in result
     assert '1M' in result
+
+
+def test_fetch_all_timeframes_use_cache_true_still_attempts_an_incremental_top_up(tmp_path):
+    """Bugfix 2026-07-26: use_cache=True las eine vorhandene Cache-Datei bisher 1:1 ein, OHNE
+    jemals fetch_ohlcv() aufzurufen -- ein Trainings-/Optimizer-Lauf mit 'n' auf die Cache-Frage
+    (run_pipeline.sh/optimize.sh) bekam dadurch denselben (potenziell wochenalten) Datenstand
+    fuer immer, live beobachtet als Trainingsdaten, die ueber Wochen bei einem festen Datum
+    haengen blieben (kompletter Monat ohne Trades im Backtest). Jetzt MUSS auch bei use_cache=True
+    ein inkrementeller Top-up-Versuch (via fetch_ohlcv_incremental -> fetch_ohlcv) stattfinden."""
+    limit = max(50, int(400 * 24 * 60 / TIMEFRAME_MINUTES['1d']))
+    safe_symbol = SYMBOL.replace('/', '_').replace(':', '_')
+    cache_path = tmp_path / f"ohlcv_{safe_symbol}_1d_{limit}.pkl"
+    stale = make_daily_df(limit, start='2024-01-01')
+    stale.to_pickle(cache_path)
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+        fetch_all_timeframes(SYMBOL, ['1d'], history_days=400, cache_dir=str(tmp_path), use_cache=True)
+
+    mock_fetch.assert_called()  # vorher: bei vorhandenem Cache NIE aufgerufen
+
+
+def test_fetch_all_timeframes_use_cache_true_extends_a_stale_cache_with_fresh_data(tmp_path):
+    limit = max(50, int(400 * 24 * 60 / TIMEFRAME_MINUTES['1d']))
+    safe_symbol = SYMBOL.replace('/', '_').replace(':', '_')
+    cache_path = tmp_path / f"ohlcv_{safe_symbol}_1d_{limit}.pkl"
+    stale = make_daily_df(limit, start='2024-01-01')
+    stale.to_pickle(cache_path)
+    stale_last_date = stale.index[-1]
+
+    fresh_row = pd.DataFrame({'open': 200.0, 'high': 201.0, 'low': 199.0, 'close': 200.5, 'volume': 20.0},
+                              index=[stale_last_date + pd.Timedelta(days=1)])
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = fresh_row
+        result = fetch_all_timeframes(SYMBOL, ['1d'], history_days=400, cache_dir=str(tmp_path), use_cache=True)
+
+    assert result['1d'].index[-1] > stale_last_date
+
+
+def test_fetch_all_timeframes_use_cache_false_deletes_stale_cache_and_forces_full_fetch(tmp_path):
+    limit = max(50, int(400 * 24 * 60 / TIMEFRAME_MINUTES['1d']))
+    safe_symbol = SYMBOL.replace('/', '_').replace(':', '_')
+    cache_path = tmp_path / f"ohlcv_{safe_symbol}_1d_{limit}.pkl"
+    make_daily_df(limit, start='2024-01-01').to_pickle(cache_path)
+
+    fresh_full = make_daily_df(limit, start='2025-01-01')
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.return_value = fresh_full
+        result = fetch_all_timeframes(SYMBOL, ['1d'], history_days=400, cache_dir=str(tmp_path), use_cache=False)
+
+    # since_ms darf NICHT gesetzt sein -- ein erzwungener Neuabruf muss bei komplett frischem
+    # (durch Loeschen des Caches leerem) Zustand starten, nicht inkrementell ab dem alten Stand.
+    _, kwargs = mock_fetch.call_args
+    assert kwargs.get('since_ms') is None
+    assert result['1d'].index[0] == fresh_full.index[0]

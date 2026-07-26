@@ -246,7 +246,20 @@ def fetch_all_timeframes(symbol: str, timeframes: list, history_days: int, cache
 
     Der volle Mehr-Timeframe-Fetch (v.a. 15m ueber hunderte Tage) dauert mehrere Minuten -- ein
     Cache erspart das erneute Fetchen bei wiederholten Trainings-Laeufen. Wird von
-    train_barrier_model.py und show_results.py genutzt, damit beide denselben Cache treffen.
+    train_barrier_model.py, optimize_barrier_model.py und show_results.py genutzt, damit alle
+    denselben Cache treffen.
+
+    use_cache=True (Standard): inkrementelles Update ueber fetch_ohlcv_incremental() -- laedt
+    einen vorhandenen Cache und haengt nur die Kerzen seit dem letzten Stand an, genau wie bei
+    der Live-Inferenz (predict_next_barrier.py). BUGFIX 2026-07-26: vorher wurde eine vorhandene
+    Cache-Datei stattdessen 1:1 uebernommen, OHNE je neue Kerzen anzuhaengen -- "n" bei "Gecachte
+    OHLCV-Daten frisch abrufen?" (run_pipeline.sh/optimize.sh) bedeutete dadurch stillschweigend
+    "beliebig alten Cache fuer immer weiterverwenden" statt "schnell, aber trotzdem aktuell".
+    Live beobachtet: Trainingsdaten blieben ueber Wochen auf demselben Stand eingefroren, ein
+    kompletter Monat ohne Trades im Backtest, weil schlicht keine neueren Kerzen im Datensatz
+    waren.
+    use_cache=False: loescht einen vorhandenen Cache und erzwingt dadurch einen kompletten
+    Neuabruf (langsamer, aber garantiert luecken-/altlastenfrei).
 
     '1M' wird NICHT direkt von Bitget abgefragt, sondern per resample_ohlcv() aus '1d'
     abgeleitet (siehe dortige Begruendung) -- '1d' wird dafuer automatisch mitgeladen, auch
@@ -262,15 +275,15 @@ def fetch_all_timeframes(symbol: str, timeframes: list, history_days: int, cache
         limit = max(50, int(history_days * 24 * 60 / TIMEFRAME_MINUTES[tf]))
         cache_path = os.path.join(cache_dir, f"ohlcv_{safe_symbol}_{tf}_{limit}.pkl") if cache_dir else None
 
-        if use_cache and cache_path and os.path.exists(cache_path):
-            df = pd.read_pickle(cache_path)
-            logger.info(f"{symbol} {tf}: {len(df)} Kerzen aus Cache geladen ({cache_path}).")
+        if not use_cache and cache_path and os.path.exists(cache_path):
+            os.remove(cache_path)
+
+        if cache_path:
+            df = fetch_ohlcv_incremental(symbol, tf, limit, cache_path)
         else:
             logger.info(f"Lade {symbol} {tf} ({limit} Kerzen, ~{history_days} Tage)...")
             df = fetch_ohlcv(symbol, tf, limit=limit)
             logger.info(f"  -> {len(df)} Kerzen: {df.index[0]} bis {df.index[-1]}" if len(df) else "  -> keine Daten")
-            if cache_path:
-                df.to_pickle(cache_path)
         ohlcv_by_timeframe[tf] = df
 
     if '1M' in timeframes:
