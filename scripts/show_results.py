@@ -6,6 +6,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -190,7 +191,19 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
     ), row=2, col=1)
     fig.add_hline(y=start_capital, line=dict(color='rgba(100,100,100,0.4)', width=1, dash='dash'),
                   annotation_text=f'Start {start_capital:.0f} USDT', annotation_position='top left', row=2, col=1)
-    fig.update_yaxes(type='log', title_text='USDT (log)', row=2, col=1)
+    # Explizite Log-Range statt Plotly-Autorange: eine anti_martingale_backtest()-Kapitalkurve
+    # kann bei einem katastrophalen Trade auf exakt 0.0 fallen (siehe evaluation.py's
+    # `capital = max(capital, 0.0)`-Floor) -- ein einzelner 0-Wert in den Log-Achsen-Daten liess
+    # Plotly beobachtet auf einen absurd riesigen Default-Bereich (bis 10^16) zurueckfallen,
+    # obwohl die eigentlichen Werte nur ueber wenige Dekaden liegen (Nutzer-Feedback 2026-07-26).
+    positive_capitals = [c for c in capitals if c > 0]
+    if positive_capitals:
+        log_min = math.log10(min(positive_capitals))
+        log_max = math.log10(max(positive_capitals))
+        pad = max((log_max - log_min) * 0.1, 0.15)
+        fig.update_yaxes(type='log', title_text='USDT (log)', range=[log_min - pad, log_max + pad], row=2, col=1)
+    else:
+        fig.update_yaxes(type='log', title_text='USDT (log)', row=2, col=1)
 
     streak_colors = ['#26a69a' if v > 0 else '#ef5350' for v in streak_values]
     fig.add_trace(go.Bar(

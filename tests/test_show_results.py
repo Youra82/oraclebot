@@ -1,3 +1,5 @@
+import re
+
 import openpyxl
 import pandas as pd
 import pytest
@@ -119,3 +121,30 @@ def test_chart_since_filter_with_no_matching_trades_returns_none(isolated_charts
     trades = [make_trade('2026-01-01', 0.05, 'win')]
     backtest = run_anti_martingale_backtest(trades, BASE_CFG)
     assert sr.generate_chart(trades, BASE_CFG, backtest, 'BTC_USDT_USDT', since='2027-01-01') is None
+
+
+def test_chart_yaxis_range_stays_sane_even_after_a_total_wipeout_to_zero_capital(
+        isolated_charts_dir, fake_price_data):
+    # Ein katastrophaler Trade (frac=-1.0 bei 100x Hebel) drueckt das Kapital auf exakt 0.0
+    # (siehe evaluation.py's `capital = max(capital, 0.0)`-Floor) -- ein einzelner 0-Wert in den
+    # Log-Achsen-Daten liess Plotlys Autorange beobachtet auf einen absurd riesigen
+    # Default-Bereich (bis 10^16) zurueckfallen, obwohl die eigentlichen Werte nur ueber wenige
+    # Dekaden liegen (Nutzer-Feedback 2026-07-26).
+    trades = [
+        make_trade('2026-01-01', 0.05, 'win'),
+        make_trade('2026-01-02', -1.0, 'loss'),
+        make_trade('2026-01-03', 0.05, 'win'),
+        make_trade('2026-01-04', 0.05, 'win'),
+    ]
+    backtest = run_anti_martingale_backtest(trades, BASE_CFG)
+    assert 0.0 in [t['equity_after'] for t in trades]  # Testannahme bestaetigen
+
+    outfile = sr.generate_chart(trades, BASE_CFG, backtest, 'BTC_USDT_USDT')
+    html = open(outfile, encoding='utf-8').read()
+    # Nicht-gierig ueber verschachtelte "title":{...}-Klammern hinweg bis zum naechsten "range".
+    m = re.search(r'"yaxis2":\{.*?"range":\[([\-0-9.]+),\s*([\-0-9.]+)\]', html)
+    assert m is not None, "yaxis2 range nicht im HTML gefunden"
+    log_lo, log_hi = float(m.group(1)), float(m.group(2))
+    # Vor dem Fix haette Plotlys Autorange hier problemlos > 10 Dekaden (z.B. bis 10^16)
+    # aufspannen koennen -- mit expliziter Range darf die Spanne nur wenige Dekaden betragen.
+    assert log_hi - log_lo < 5
