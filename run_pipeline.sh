@@ -44,16 +44,40 @@ else
     echo -e "${GREEN}✔ Nutze history_days aus settings.json.${NC}"
 fi
 
-# ── 2. Frischer Datenabruf? ───────────────────────────────────────────────────
+# ── 2. Komplett neu anfangen? ─────────────────────────────────────────────────
+# Anders als bei dnabot (Genome-DB, akkumuliert Wissen ueber mehrere Laeufe) gibt es hier
+# KEINE Datenbank und KEIN inkrementelles Lernen -- jeder train_barrier_model.py-Lauf trainiert
+# das Modell ohnehin komplett neu (kein Warm-Start), unabhaengig vom vorherigen Modellstand.
+# "Neu anfangen" bedeutet hier: alle lokal generierten Artefakte (Modell, Trainingsdatensatz,
+# Diagnose, OHLCV-Cache) loeschen -- rein kosmetisch/aufraeumend, aendert das Trainingsergebnis
+# selbst NICHT. Betrifft NICHT den Live-Zustand (artifacts/state/anti_martingale_state.json)
+# -- der wird hier bewusst nicht angefasst, auch wenn live_trading_enabled aktiv ist.
 echo ""
-read -p "Gecachte OHLCV-Daten ignorieren und frisch abrufen? (j/n) [Standard: n]: " NO_CACHE
-NO_CACHE="${NO_CACHE//[$'\r\n ']/}"
+echo -e "${CYAN}ℹ  Hinweis: oraclebot hat keine Datenbank und kein inkrementelles Lernen -- jedes${NC}"
+echo -e "${CYAN}   Training ist ohnehin ein kompletter Neustart. \"Loeschen\" entfernt nur lokale${NC}"
+echo -e "${CYAN}   Cache-/Ergebnisdateien, aendert aber nichts am eigentlichen Trainingsergebnis.${NC}"
+read -p "Alle bisherigen Artefakte (Modell, Datensatz, Diagnose, OHLCV-Cache) loeschen und komplett neu anfangen? (j/n) [Standard: n]: " RESET_ALL
+RESET_ALL="${RESET_ALL//[$'\r\n ']/}"
 CACHE_ARG=""
-if [[ "$NO_CACHE" == "j" || "$NO_CACHE" == "J" || "$NO_CACHE" == "y" || "$NO_CACHE" == "Y" ]]; then
+if [[ "$RESET_ALL" == "j" || "$RESET_ALL" == "J" || "$RESET_ALL" == "y" || "$RESET_ALL" == "Y" ]]; then
+    rm -f artifacts/datasets/barrier_model_*.pkl
+    rm -f artifacts/datasets/barrier_*.jsonl
+    rm -f artifacts/datasets/barrier_diagnostics_*.json
+    # "ohlcv_live_*.pkl" NICHT anfassen -- das ist predict_next_barrier.py's inkrementeller
+    # Live-Cache, unabhaengig vom Trainings-Cache (nur "ohlcv_<symbol>_<tf>_<limit>.pkl").
+    find artifacts/datasets -maxdepth 1 -name 'ohlcv_*.pkl' ! -name 'ohlcv_live_*.pkl' -delete
     CACHE_ARG="--no-cache"
-    echo -e "${CYAN}ℹ  Erzwinge frischen Abruf aller Timeframes (kann mehrere Minuten dauern).${NC}"
+    echo -e "${GREEN}✔ Alte Artefakte geloescht -- kompletter Neustart (inkl. frischem OHLCV-Abruf).${NC}"
 else
-    echo -e "${GREEN}✔ Nutze vorhandenen Cache, wo verfuegbar.${NC}"
+    echo ""
+    read -p "Gecachte OHLCV-Daten ignorieren und frisch abrufen? (j/n) [Standard: n]: " NO_CACHE
+    NO_CACHE="${NO_CACHE//[$'\r\n ']/}"
+    if [[ "$NO_CACHE" == "j" || "$NO_CACHE" == "J" || "$NO_CACHE" == "y" || "$NO_CACHE" == "Y" ]]; then
+        CACHE_ARG="--no-cache"
+        echo -e "${CYAN}ℹ  Erzwinge frischen Abruf aller Timeframes (kann mehrere Minuten dauern).${NC}"
+    else
+        echo -e "${GREEN}✔ Nutze vorhandenen Cache, wo verfuegbar.${NC}"
+    fi
 fi
 
 # ── Pipeline starten ─────────────────────────────────────────────────────────
