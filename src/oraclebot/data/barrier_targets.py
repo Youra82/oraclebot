@@ -10,7 +10,11 @@
 # Mittel 67.5%, Standardabweichung nur 3.0pp -- deutlich robuster als targets.py's taegliches
 # trend-Ziel (Mittel 59.0%, Worst-Case 56.0% bei nur 3 Fenstern). Ausserdem ~7x mehr
 # Handelsgelegenheiten (4h- statt Tages-Kadenz).
+import time
+
 import pandas as pd
+
+from oraclebot.utils.progress import finish_progress, render_progress
 
 BARRIER_LABELS = ['down_first', 'up_first']  # 0, 1
 
@@ -32,7 +36,15 @@ def compute_barrier_labels(reference_df: pd.DataFrame, intraday_df: pd.DataFrame
         verfuegbaren Historie, wo weder Barriere je erreicht wird) werden weggelassen.
     """
     records = []
-    for ts, row in reference_df.iterrows():
+    n = len(reference_df)
+    start_time = time.time()
+    # Nicht vektorisiert (pro Referenzkerze eine vorwaertslaufende Suche in intraday_df) -- kann
+    # bei mehreren tausend Referenzkerzen ohne sichtbare Zwischenausgabe eine Weile dauern.
+    # Fortschrittsbalken, damit ein interaktiver Lauf (run_pipeline.sh) nicht wie ein Haenger
+    # aussieht (Nutzer-Feedback 2026-07-26).
+    for i, (ts, row) in enumerate(reference_df.iterrows()):
+        if i % 25 == 0 or i == n - 1:
+            render_progress("Barriere-Labels", i + 1, n, start_time)
         entry = float(row['close'])
         up_level = entry * (1 + barrier_pct / 100.0)
         down_level = entry * (1 - barrier_pct / 100.0)
@@ -48,6 +60,8 @@ def compute_barrier_labels(reference_df: pd.DataFrame, intraday_df: pd.DataFrame
         if label is None:
             continue
         records.append({'ts': ts, 'entry': entry, 'label': label, 'exit_time': exit_time})
+    if n:
+        finish_progress()
 
     if not records:
         return pd.DataFrame(columns=['entry', 'label', 'exit_time'])

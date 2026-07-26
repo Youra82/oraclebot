@@ -28,3 +28,9 @@ scikit-learn==1.8.0
 
 # Tests
 pytest
+
+# Ergebnis-Anzeige (scripts/show_results.py --chart/--excel) -- werden fuers Training/die
+# Live-Inferenz selbst NICHT gebraucht, aber ohne sie bricht show_results.py auf einer frischen
+# Installation (z.B. VPS) mit "ModuleNotFoundError" ab (beobachtet 2026-07-26).
+matplotlib>=3.10.0
+openpyxl>=3.1.0

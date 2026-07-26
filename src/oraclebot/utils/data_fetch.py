@@ -2,40 +2,16 @@
 # Oeffentlicher OHLCV-Download (keine API-Keys noetig) fuer den Dataset-Bau.
 import logging
 import os
-import sys
 import time
 
 import ccxt
 import pandas as pd
 
+from oraclebot.utils.progress import finish_progress, render_progress
+
 logger = logging.getLogger(__name__)
 
 TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
-
-
-def _render_progress(prefix: str, current: int, total: int, start_time: float, width: int = 30):
-    """Ein-Zeilen-Fortschrittsbalken (ueberschreibt sich selbst per \\r) + laufender Timer.
-    Nur wenn stdout ein echtes Terminal ist (interaktiver run_pipeline.sh/show_results.sh-Lauf)
-    -- bei Cron-Ausfuehrung (Output nach logs/cron.log umgeleitet) wird NICHTS geschrieben, damit
-    das Log nicht mit Steuerzeichen vollgespammt wird (isatty()==False dort)."""
-    if not sys.stdout.isatty():
-        return
-    pct = min(current / total, 1.0) if total else 1.0
-    filled = int(width * pct)
-    bar = '#' * filled + '-' * (width - filled)
-    elapsed = int(time.time() - start_time)
-    mins, secs = divmod(elapsed, 60)
-    sys.stdout.write(f"\r  [{bar}] {prefix}: {current}/{total} ({pct * 100:.0f}%) | {mins:02d}:{secs:02d}   ")
-    sys.stdout.flush()
-
-
-def _finish_progress():
-    """Schliesst die per \\r ueberschriebene Fortschrittszeile mit einem Zeilenumbruch ab,
-    damit nachfolgende logger.info()-Ausgaben nicht an dieselbe Zeile angehaengt werden."""
-    if sys.stdout.isatty():
-        sys.stdout.write('\n')
-        sys.stdout.flush()
-
 
 FULL_FETCH_RETRY_LIMIT = 2
 FULL_FETCH_SHORTFALL_RATIO = 0.5
@@ -116,7 +92,7 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
         if not chunk:
             break
         all_ohlcv.extend(chunk)
-        _render_progress(f"{symbol} {timeframe}", len(all_ohlcv), limit, start_time)
+        render_progress(f"{symbol} {timeframe}", len(all_ohlcv), limit, start_time)
         # +1ms statt +timeframe_ms: Bitgets `since` ist exklusiv (timestamp > since),
         # ein voller Timeframe-Schritt trifft exakt die naechste Kerze und ueberspringt sie.
         since = all_ohlcv[-1][0] + 1
@@ -125,7 +101,7 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
         time.sleep(exchange.rateLimit / 1000)
 
     if all_ohlcv:
-        _finish_progress()
+        finish_progress()
 
     # Ganz-Fetch-Retry bei drastischem Rueckstand: die per-Chunk-Retries oben (3x, kurzer
     # Backoff) fangen einzelne transiente Ausreisser ab, helfen aber nichts, wenn Bitget fuer
