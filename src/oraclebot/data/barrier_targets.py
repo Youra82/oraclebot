@@ -10,11 +10,14 @@
 # Mittel 67.5%, Standardabweichung nur 3.0pp -- deutlich robuster als targets.py's taegliches
 # trend-Ziel (Mittel 59.0%, Worst-Case 56.0% bei nur 3 Fenstern). Ausserdem ~7x mehr
 # Handelsgelegenheiten (4h- statt Tages-Kadenz).
+import logging
 import time
 
 import pandas as pd
 
 from oraclebot.utils.progress import finish_progress, render_progress
+
+logger = logging.getLogger(__name__)
 
 BARRIER_LABELS = ['down_first', 'up_first']  # 0, 1
 
@@ -122,6 +125,13 @@ def build_barrier_examples(ohlcv_by_timeframe: dict, reference_timeframe: str, i
     if context_timeframes:
         ref_ts_df = pd.DataFrame(index=pd.DatetimeIndex(joined_index).rename('ts')).reset_index()
         for tf in context_timeframes:
+            # Kein Fortschrittsbalken pro Kerze wie bei compute_barrier_labels (compute_features()
+            # ist vektorisiert, meist Sekunden) -- aber ohne JEDE Ausgabe sieht ein Nutzer, der
+            # live zuschaut, nach der Barriere-Labels-Fortschrittsanzeige minutenlang nichts mehr,
+            # obwohl hier fuer JEDEN Kontext-Timeframe (bei 15m z.B. >90000 Kerzen) neu gerechnet
+            # wird (Nutzer-Feedback 2026-07-26).
+            n_raw = len(ohlcv_by_timeframe.get(tf, []))
+            logger.info(f"  Verarbeite Kontext-Timeframe '{tf}' ({n_raw} Kerzen)...")
             context_feat = feats_for(tf)
             if context_feat.empty:
                 # compute_features() auf einer (fast) leeren OHLCV-DataFrame liefert 0 Zeilen --
