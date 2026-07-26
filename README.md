@@ -77,15 +77,17 @@ groß genug, dass zusätzliche Zeitebenen nicht bloß überanpassen.
 oraclebot/
 ├── scripts/
 │   ├── train_barrier_model.py     # Trainiert das Barriere-Modell + Walk-Forward-Robustheitscheck
+│   ├── optimize_barrier_model.py  # Sucht min_confidence/model_max_depth/Anti-Martingale systematisch (strikte OOS-Disziplin)
 │   ├── predict_next_barrier.py    # Live-Inferenz + Trading auf 4h-Kadenz (per Cron)
 │   └── show_results.py            # Diagnose + Anti-Martingale-Backtest + Chart/Excel-Export
 ├── run_pipeline.sh                # Interaktiv: trainiert das Modell (ruft train_barrier_model.py)
+├── optimize.sh                    # Interaktiv: Parameter-Suche (ruft optimize_barrier_model.py)
 ├── show_results.sh                # Interaktiv: Zusammenfassung/Chart/Excel (ruft show_results.py)
-├── push_configs.sh                # Modell + settings.json committen/pushen (mit Rebase-Retry)
+├── push_configs.sh                # Modell + Strategie-Config + settings.json committen/pushen (mit Rebase-Retry)
 ├── install.sh                     # Erstinstallation auf VPS
 ├── update.sh                      # Git-Update (sichert secret.json)
 ├── run_tests.sh                   # Testsuite + Live-Smoke-Test (Gate+Marker)
-├── settings.json                  # Konfiguration
+├── settings.json                  # Strukturelle Konfiguration (siehe Konfiguration)
 ├── secret.json                    # Bitget-API-Keys + Telegram Bot-Token/Chat-ID (nicht in Git)
 │
 └── src/oraclebot/
@@ -98,18 +100,24 @@ oraclebot/
     ├── model/
     │   └── barrier_model.py       # BarrierPredictor: HistGradientBoostingClassifier-Wrapper
     │
+    ├── analysis/
+    │   └── evaluation.py          # Walk-Forward/Bootstrap/Trade-Aufbau -- geteilt von Training, Optimizer, show_results.py
+    │
     ├── strategy/
     │   ├── barrier_signal.py      # Vorhersage -> Handelssignal (Entry/SL/TP)
     │   ├── signal.py              # compute_position_size (risikobasierte Positionsgroesse)
     │   ├── anti_martingale.py     # Alternative Positionsgroessen-Logik (Einsatz waechst nach Gewinnen)
-    │   └── live_trade.py          # Order-Orchestrierung (Entry -> SL -> TP, Trigger-Order-Cleanup)
+    │   ├── live_trade.py          # Order-Orchestrierung (Entry -> SL -> TP, Trigger-Order-Cleanup)
+    │   └── configs/
+    │       └── config_BTC_USDT_USDT_4h.json  # Coin/Timeframe-Strategie-Config (vom Optimizer geschrieben)
     │
     └── utils/
         ├── data_fetch.py          # Oeffentlicher OHLCV-Download (ccxt, Bitget)
         ├── exchange.py            # Authentifizierter Bitget-Wrapper (Live-Order-Platzierung)
         ├── barrier_gate.py        # 4h-Zeitfenster + Perioden-Marker (Doppel-Versand-Schutz)
         ├── training_history.py    # Protokolliert Trainingslaeufe, warnt bei Parameter-Tuning-Overfitting-Risiko
-        └── telegram.py            # send_message/send_photo
+        ├── config.py              # Laedt + mischt settings.json + Strategie-Config zu einem Dict
+        └── telegram.py            # send_message/send_photo/send_document
 
 artifacts/
 ├── datasets/
@@ -118,7 +126,7 @@ artifacts/
 │   ├── training_history_*.jsonl              # Verlauf aller Trainingslaeufe (nicht in Git)
 │   └── *.jsonl / ohlcv_*.pkl                 # Trainingsdaten-Cache (NICHT in Git, jederzeit neu baubar)
 ├── charts/                          # show_results.py --chart/--excel Ausgabe (nicht in Git)
-│   ├── combined_overview.png        # Preis+Trades / Kapitalkurve / Serien-Chart
+│   ├── combined_overview.html       # Interaktiv (Plotly): Preis+Trades / Kapitalkurve / Serien-Chart
 │   └── oraclebot_trades_*.xlsx      # Formatierter Trade-Log-Export (Excel)
 └── state/                           # Live-Zustand der Anti-Martingale-Positionsgroesse (nicht in Git)
 ```
@@ -284,9 +292,29 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 
 ---
 
-## Konfiguration (`settings.json`)
+## Konfiguration
+
+Zwei getrennte Dateien, analog zum dnabot/zerobot-Muster (`configs/config_<symbol>_<timeframe>.json`),
+aber deutlich einfacher (nur EIN Symbol/Timeframe aktiv, kein `active_strategies`-Array):
+
+- **`settings.json`** — strukturelle Einstellungen: Symbol, Timeframes, Feature-Fenster, Hebel,
+  Margin-Modus, Live-Trading-Schalter, Startkapital, Gebühren-Annahme. Änderst du diese von Hand
+  oder lässt sie unverändert, unabhängig vom Optimizer.
+- **`src/oraclebot/strategy/configs/config_<symbol>_<reference_timeframe>.json`** — genau die 5
+  Parameter, die `optimize_barrier_model.py` systematisch sucht (`min_confidence`,
+  `model_max_depth`, die drei `anti_martingale_*`-Werte). Wird von `load_barrier_config()`
+  (`src/oraclebot/utils/config.py`) automatisch über `settings.json` gemischt — fehlt die Datei
+  (frisches Setup, noch kein Optimizer-Lauf), greifen sinnvolle Standardwerte.
+
+**Coin-/Timeframe-Wechsel:** Der Dateiname kodiert Symbol UND `reference_timeframe`
+(`config_BTC_USDT_USDT_4h.json`, `config_ETH_USDT_USDT_1h.json`, ...). Änderst du `symbol` oder
+`reference_timeframe` in `settings.json`, lädt `load_barrier_config()` automatisch die passende
+(oder eine neue, leere) Config-Datei für diese Kombination — die Parameter verschiedener
+Coins/Timeframes müssen nie manuell einheitlich gehalten werden, jede Kombination hat ihre eigene
+Datei.
 
 ```json
+// settings.json
 {
     "barrier_strategy_settings": {
         "symbol": "BTC/USDT:USDT",
@@ -294,15 +322,10 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
         "intraday_timeframe": "15m",
         "context_timeframes": ["1M", "1w", "1d", "1h", "15m"],
         "barrier_pct": 1.0,
-        "model_max_depth": 3,
-        "min_confidence": 0.60,
         "leverage": 100,
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": false,
-        "anti_martingale_base_pct": 4.03,
-        "anti_martingale_growth_factor": 2.0,
-        "anti_martingale_streak_target": 3,
         "live_trading_enabled": false,
         "history_days": 1000,
         "val_split": 0.30,
@@ -319,20 +342,32 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 }
 ```
 
-| Parameter | Erklärung |
-|---|---|
-| `reference_timeframe` / `intraday_timeframe` | 4h für Signal-Entscheidungen, 15m für die Barriere-Reihenfolgen-Bestimmung. |
-| `context_timeframes` | Zusätzliche Zeitebenen, deren letzte abgeschlossene Kerze als weiterer Feature-Block angehängt wird (siehe [Barriere-Zielvariable](#2-barriere-zielvariable-barrier_targetspy)). Leer = nur 4h-Features (altes Verhalten). |
-| `barrier_pct` | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. |
-| `model_max_depth` | HistGBM-Baumtiefe. 3 validiert (siehe [Modell](#3-modell-barrier_modelpy)). |
-| `min_confidence` | 0.60 validiert (684 Trades, 80.6% Winrate im Testzeitraum). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). `base_pct=4.03` haelt den 90.-Perzentil-MaxDD (Bootstrap über 3000 Neuordnungen der 684 Testtrades, **inklusive** Bitget-Taker-Gebühren) bei ~50% — kalibriert für 15 USDT Startkapital, 100x Hebel (rekalibriert 2026-07-26). Ohne Gebührenmodell hätte derselbe Bootstrap-Ansatz `base_pct=5.17` ergeben, was mit echten Gebühren aber ein 90.-Perzentil-MaxDD von ~60% statt ~50% bedeutet — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
-| `history_days` | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
-| `backtest_start_capital` | Startkapital fürs `show_results.py`-Backtest (Anti-Martingale-Kapitalkurve/Chart/Excel-Export). Hat keinen Einfluss auf Live-Trading — dort zählt das echte Bitget-Guthaben. |
-| `taker_fee_rate_pct` | Bitget-Taker-Gebühr pro Seite (Standard-Tier ohne VIP-Rabatt), fließt in `show_results.py`'s Backtest UND in die Anti-Martingale-Kalibrierung ein — bei 100x Hebel ~12% der Brutto-PnL pro Trade, keine Kleinigkeit (siehe [Einschränkungen](#wichtige-regeln--bekannte-einschränkungen)). |
-| `feature_settings_by_timeframe` | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
-| `live_trading_enabled` | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
-| `notification_settings.telegram_enabled` | Unabhängig von `live_trading_enabled` — Prognosen kommen auch bei deaktiviertem Live-Trading per Telegram an. |
+```json
+// src/oraclebot/strategy/configs/config_BTC_USDT_USDT_4h.json
+{
+    "min_confidence": 0.60,
+    "model_max_depth": 3,
+    "anti_martingale_base_pct": 4.03,
+    "anti_martingale_growth_factor": 2.0,
+    "anti_martingale_streak_target": 3,
+    "_meta": { "optimized_at": "...", "walk_forward_mean": 0.736, "...": "..." }
+}
+```
+
+| Parameter | Datei | Erklärung |
+|---|---|---|
+| `reference_timeframe` / `intraday_timeframe` | settings.json | 4h für Signal-Entscheidungen, 15m für die Barriere-Reihenfolgen-Bestimmung. |
+| `context_timeframes` | settings.json | Zusätzliche Zeitebenen, deren letzte abgeschlossene Kerze als weiterer Feature-Block angehängt wird (siehe [Barriere-Zielvariable](#2-barriere-zielvariable-barrier_targetspy)). Leer = nur 4h-Features (altes Verhalten). |
+| `barrier_pct` | settings.json | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. Bewusst NICHT Teil der Optimizer-Suche (siehe [Parameter automatisch optimieren](#1b-parameter-automatisch-optimieren-optional)). |
+| `model_max_depth` | **Strategie-Config** | HistGBM-Baumtiefe. Von `optimize_barrier_model.py` per Walk-Forward + Ein-Standardfehler-Regel gewählt (siehe unten) — manuell zuletzt bei 3 validiert. |
+| `min_confidence` | **Strategie-Config** | Von `optimize_barrier_model.py` per Sensitivitäts-Sweep gewählt (niedrigste Schwelle, die eine 70%-Winrate-Sicherheitsmarge über der Gebühren-Breakeven-Grenze hält). Höher = weniger, aber treffsicherere Trades. |
+| `anti_martingale_*` | **Strategie-Config** | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). Von `optimize_barrier_model.py` per gebühren-bewusster Bootstrap-Kalibrierung gewählt (Ziel: 90.-Perzentil-MaxDD unter einer interaktiv vorgegebenen Grenze) — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
+| `history_days` | settings.json | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
+| `backtest_start_capital` | settings.json | Startkapital fürs `show_results.py`-Backtest (Anti-Martingale-Kapitalkurve/Chart/Excel-Export). Hat keinen Einfluss auf Live-Trading — dort zählt das echte Bitget-Guthaben. |
+| `taker_fee_rate_pct` | settings.json | Bitget-Taker-Gebühr pro Seite (Standard-Tier ohne VIP-Rabatt), fließt in `show_results.py`'s Backtest UND in die Anti-Martingale-Kalibrierung ein — bei 100x Hebel ~12% der Brutto-PnL pro Trade, keine Kleinigkeit (siehe [Einschränkungen](#wichtige-regeln--bekannte-einschränkungen)). |
+| `feature_settings_by_timeframe` | settings.json | Optionale Overrides je Kontext-Timeframe (z.B. kürzere Indikator-Fenster für `1M`/`1w`, die sonst Jahre an Warmup bräuchten). |
+| `live_trading_enabled` | settings.json | Schaltet echte Order-Platzierung ein/aus. Standard: `false`. |
+| `notification_settings.telegram_enabled` | settings.json | Unabhängig von `live_trading_enabled` — Prognosen kommen auch bei deaktiviertem Live-Trading per Telegram an. |
 
 ---
 
@@ -398,11 +433,14 @@ nur wenige, wirklich relevante Optionen ab.
 
 Fragt optional `history_days`-Override, dann zwei **unabhängige** Fragen:
 
-1. Bisheriges Modell, Trainingsdatensatz und Diagnose löschen und komplett neu beginnen?
-   Anders als bei dnabot (Genome-Datenbank, akkumuliert Wissen über mehrere Läufe) gibt es hier
-   **keine Datenbank und kein inkrementelles Lernen** — jeder `train_barrier_model.py`-Lauf
-   trainiert ohnehin komplett neu (kein Warm-Start), das Löschen ist rein aufräumend und ändert
-   das Trainingsergebnis selbst nicht.
+1. Bisheriges Modell, Trainingsdatensatz, Diagnose UND Strategie-Config löschen und komplett neu
+   beginnen? Anders als bei dnabot (Genome-Datenbank, akkumuliert Wissen über mehrere Läufe)
+   gibt es hier **keine Datenbank und kein inkrementelles Lernen** — jeder
+   `train_barrier_model.py`-Lauf trainiert ohnehin komplett neu (kein Warm-Start), das Löschen
+   ist rein aufräumend und ändert das Trainingsergebnis selbst nicht. Die Strategie-Config wird
+   mitgelöscht, damit `min_confidence`/`model_max_depth`/Anti-Martingale-Werte danach wieder auf
+   den eingebauten Standardwerten starten (siehe [Konfiguration](#konfiguration)) statt auf
+   veralteten, zur gelöschten Trainingshistorie nicht mehr passenden Werten.
 2. Gecachte OHLCV-Daten ignorieren und frisch abrufen?
 
 Bewusst **entkoppelt** (nicht wie zuerst umgesetzt an Frage 1 gekoppelt): Bitgets `1M`-Endpunkt
@@ -423,6 +461,47 @@ chronologische Walk-Forward-Fenster, trainiert das finale Modell auf dem offizie
 
 Zeigt am Ende automatisch die Zusammenfassung (wie `show_results.sh` Modus 1).
 
+#### 1b. Parameter automatisch optimieren (optional)
+
+```bash
+./optimize.sh
+```
+
+Sucht systematisch `model_max_depth`, `min_confidence` und die drei `anti_martingale_*`-Werte —
+dieselbe Methodik, mit der diese Werte ursprünglich manuell erforscht wurden (Walk-Forward-
+Vergleich, Sensitivitäts-Sweep, gebühren-bewusste Bootstrap-Kalibrierung), jetzt als
+wiederholbares Skript. Fragt zu Beginn interaktiv `reference_timeframe`, Hebel, Startkapital,
+Ziel-MaxDD und `history_days` ab (Standard jeweils aus `settings.json`).
+
+**Bewusst NICHT Teil der Suche:** `leverage`, `margin_mode`, `live_trading_enabled`,
+`history_days`, `val_split`, `backtest_start_capital`, `taker_fee_rate_pct`, `num_threads`,
+Feature-Fenster — entweder Strategie-Grundentscheidungen, Methodik-/Betriebsparameter, oder ein
+zu großer Suchraum für die aktuelle Datenmenge (Overfitting-Risiko).
+
+**Strikte OOS-Disziplin:** Alle Parameter werden ausschließlich anhand von Walk-Forward-
+Out-of-Fold-Vorhersagen ausgewählt (`evaluation.walk_forward_predictions`). Der offizielle
+70/30-Out-of-Sample-Split wird NIE zur Parameterwahl herangezogen — nur für einen einmaligen
+Bestätigungs-Bericht ganz am Ende, der selbst keine weitere Parameterwahl mehr beeinflusst.
+Andernfalls wäre der OOS-Split nicht mehr wirklich "ungesehen" (Mensch-im-Loop-Overfitting,
+siehe [`training_history.py`](#wichtige-regeln--bekannte-einschränkungen)).
+
+**Ein-Standardfehler-Regel bei `model_max_depth`:** Mit nur wenigen Walk-Forward-Test-Folds
+liegen mehrere Baumtiefen oft innerhalb der Rausch-Bandbreite — ein tieferer Baum ohne echten
+Out-of-Fold-Gewinn erhöht nur das Overfitting-Risiko (In-Sample-Genauigkeit nähert sich 100%).
+Der Optimizer wählt deshalb unter allen Tiefen, deren Worst-Case UND Mittel innerhalb eines
+Standardfehlers des Bestwerts liegen, die FLACHSTE. Ein realer Lauf (2026-07-26) zeigte den
+Unterschied deutlich: ohne diese Regel wählte reines "höchster Worst-Case zuerst" `depth=6`
+(99.0% In-Sample vs. 77.7% Out-of-Sample — starkes Overfitting bei nur +0.5 Prozentpunkten
+Walk-Forward-Vorteil), mit der Regel `depth=2` (80.8% vs. 76.7% — gesunde, kleine Lücke, nahezu
+identisches Out-of-Sample-Ergebnis).
+
+Zeigt am Ende einen Bericht und fragt interaktiv, ob die gefundenen Werte übernommen werden
+sollen (Modell neu speichern + Strategie-Config schreiben). **Bei "nein" bleiben Modell UND
+Strategie-Config vollständig unverändert** — ein reiner "zeig mir nur den Bericht"-Lauf darf
+das produktive Modell, das `predict_next_barrier.py` für die nächste Live-Vorhersage lädt, nicht
+stillschweigend ersetzen (Bugfix 2026-07-26: ursprünglich wurde das Modell bei JEDEM Lauf
+überschrieben, unabhängig von der Bestätigung).
+
 #### 2. Ergebnisse ansehen
 
 ```bash
@@ -435,22 +514,24 @@ selbst anzufassen (nur für diesen Lauf via `show_results.py --start-capital`).
 
 Drei Modi:
 1. **Zusammenfassung** — Trainings-Diagnose (Walk-Forward, In-Sample/Out-of-Sample) +
-   vollständiger Anti-Martingale-Backtest inkl. Gebühren (siehe [Konfiguration](#konfiguration-settingsjson):
+   vollständiger Anti-Martingale-Backtest inkl. Gebühren (siehe [Konfiguration](#konfiguration):
    `backtest_start_capital`/`taker_fee_rate_pct`), direkt in der Konsole.
-2. **Chart aktualisieren** — `artifacts/charts/combined_overview.png` (Preis+Trades,
-   Kapitalkurve, laufende Gewinn-/Verlust-Serien).
+2. **Chart aktualisieren** — `artifacts/charts/combined_overview.html`, ein **interaktives**
+   Plotly-Chart (Zoom, Rangeslider, Hover — Stil analog zu zerobots
+   `run_portfolio_optimizer.py`): Preis+Trades, Anti-Martingale-Kapitalkurve, laufende
+   Gewinn-/Verlust-Serien.
 3. **Excel-Export** — `artifacts/charts/oraclebot_trades_<Zeitstempel>.xlsx`, optional gefiltert
    auf Trades ab einem Startdatum (Kapitalkurve startet dann frisch bei
    `backtest_start_capital`, nicht mit dem alten Compounding-Stand fortgesetzt).
 
 Chart (Modus 2) und Excel (Modus 3) werden zusätzlich per Telegram verschickt, wenn
-`notification_settings.telegram_enabled: true` ist (Chart per `sendPhoto`, Excel per
-`sendDocument` — beide unabhängig von `live_trading_enabled`, wie die übrigen
-Telegram-Benachrichtigungen).
+`notification_settings.telegram_enabled: true` ist — **beide** per `sendDocument` (Telegram
+zeigt `.html` nicht inline an wie ein Foto; Datei herunterladen und im Browser öffnen), aber
+unabhängig von `live_trading_enabled`, wie die übrigen Telegram-Benachrichtigungen.
 
 Beide Skripte brauchen ein lokales `.venv` (`./install.sh`) und laufen NICHT auf dem VPS — das
 Modell ist git-getrackt, der VPS braucht kein eigenes Training (siehe
-[VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)). `matplotlib`/`openpyxl`
+[VPS-Deployment](#vps-deployment-automatische-prognose-alle-4-stunden)). `plotly`/`openpyxl`
 werden dafür trotzdem gebraucht (in `requirements.txt`, installiert via `./install.sh`), auch
 wenn sie für Training/Live-Inferenz selbst nicht nötig sind.
 
@@ -460,9 +541,10 @@ wenn sie für Training/Live-Inferenz selbst nicht nötig sind.
 ./push_configs.sh
 ```
 
-Committet + pusht `artifacts/datasets/barrier_model_*.pkl` + `settings.json` (mit
-automatischem Rebase-Retry bei Remote-Konflikten, wie bei den anderen Bots) — tut nichts, wenn
-sich an beiden Dateien nichts geändert hat. Auf dem VPS danach `./update.sh`.
+Committet + pusht `artifacts/datasets/barrier_model_*.pkl` + die Strategie-Config
+(`src/oraclebot/strategy/configs/config_<symbol>_<reference_timeframe>.json`) + `settings.json`
+(mit automatischem Rebase-Retry bei Remote-Konflikten, wie bei den anderen Bots) — tut nichts,
+wenn sich an keiner der drei Dateien etwas geändert hat. Auf dem VPS danach `./update.sh`.
 
 #### 4. Live-Prognose (manuell testen)
 
@@ -596,14 +678,17 @@ lassen (bei der Cache-Frage "j", nur für diesen einen fehlenden Timeframe nöti
 
 ```bash
 ./run_pipeline.sh
+# Optional statt/zusaetzlich zu manueller Parameterwahl:
+# ./optimize.sh
 ./push_configs.sh
 # Danach auf dem VPS: ./update.sh
 ```
 
-`push_configs.sh` (wie bei den anderen Bots) zeigt Trainings-Diagnose + relevante
-`settings.json`-Werte des zu pushenden Standes an, committet `artifacts/datasets/barrier_model_*.pkl`
-+ `settings.json` und pusht (mit automatischem Rebase-Retry bei Remote-Konflikten). Ohne
-Änderungen an diesen beiden Dateien tut es nichts.
+`push_configs.sh` (wie bei den anderen Bots) zeigt Trainings-Diagnose + die aktuelle
+Strategie-Config + relevante `settings.json`-Werte des zu pushenden Standes an, committet
+`artifacts/datasets/barrier_model_*.pkl` + die Strategie-Config + `settings.json` und pusht (mit
+automatischem Rebase-Retry bei Remote-Konflikten). Ohne Änderungen an diesen drei Dateien tut es
+nichts.
 
 ---
 
@@ -651,7 +736,7 @@ lassen (bei der Cache-Frage "j", nur für diesen einen fehlenden Timeframe nöti
   Breakeven-Winrate MIT Gebühren (SL=TP=1%, 100x): **56.0%** statt 50% ohne Gebühren. Die
   zuletzt beobachtete reale Winrate (72.9%, letzte 30 Tage) liegt trotzdem mit 16.9pp Puffer
   komfortabel darüber. `anti_martingale_base_pct` ist seit 2026-07-26 gebührenbewusst
-  kalibriert (siehe [Konfiguration](#konfiguration-settingsjson)).
+  kalibriert (siehe [Konfiguration](#konfiguration)).
 - Externe Datenquellen (Funding Rate, Fear & Greed Index, DXY, On-Chain-Metriken,
   News-Sentiment) wurden in einer früheren Projektversion getestet und verworfen — keine
   zeigte einen robusten Effekt.
@@ -668,4 +753,6 @@ numpy==2.3.5     # Array-Operationen
 scikit-learn==1.8.0  # HistGradientBoostingClassifier, StandardScaler
 requests         # Telegram-API
 pytest           # Tests
+plotly>=6.0.0    # Interaktives HTML-Chart (show_results.py)
+openpyxl>=3.1.0  # Excel-Export (show_results.py)
 ```

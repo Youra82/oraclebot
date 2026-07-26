@@ -16,11 +16,13 @@ logger = logging.getLogger(__name__)
 import numpy as np
 import pandas as pd
 
+from oraclebot.analysis.evaluation import evaluate_walk_forward
 from oraclebot.data.barrier_targets import build_barrier_examples
 from oraclebot.data.dataset import save_dataset_jsonl
 from oraclebot.data.features import FEATURE_NAMES
 from oraclebot.data.scaler import FeatureScaler
 from oraclebot.model.barrier_model import BarrierPredictor
+from oraclebot.utils.config import load_barrier_config
 from oraclebot.utils.data_fetch import fetch_all_timeframes
 from oraclebot.utils import training_history
 
@@ -28,47 +30,28 @@ PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..')
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'datasets')
 
 
-def load_settings() -> dict:
-    with open(os.path.join(PROJECT_ROOT, 'settings.json'), 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def evaluate_walk_forward(examples: list, n_folds: int = 8, max_depth: int = 3) -> dict:
-    """Robustheits-Check ueber mehrere chronologische Fenster (nicht nur den finalen 70/30-Split)
-    -- siehe Recherche 2026-07-24: 8 Fenster ueber 2.5 Jahre zeigten 62.0-71.2% Accuracy,
-    Std-Abw. nur 3pp. Wird bei jedem Training mit ausgegeben, damit ein Genauigkeits-Einbruch
-    (z.B. durch veraendertes Marktregime) sofort auffaellt."""
-    X_all = np.array([ex['features'] for ex in examples], dtype=np.float32)
-    y_all = np.array([ex['target'] for ex in examples], dtype=int)
-    n = len(examples)
-    fold_bounds = [int(n * i / n_folds) for i in range(n_folds + 1)]
-    accs = []
-    for fi in range(1, n_folds):
-        ts_, te_ = fold_bounds[fi], fold_bounds[fi + 1]
-        if ts_ < 10 or te_ - ts_ < 5:
-            continue
-        scaler = FeatureScaler().fit_array(X_all[:ts_])
-        predictor = BarrierPredictor(max_depth=max_depth).fit(X_all[:ts_], y_all[:ts_], scaler)
-        acc = predictor.score(X_all[ts_:te_], y_all[ts_:te_])
-        accs.append(acc)
-    return {'accuracies': accs, 'mean': float(np.mean(accs)), 'worst_case': float(np.min(accs))}
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--symbol', default=None, help='Ueberschreibt barrier_strategy_settings.symbol')
     parser.add_argument('--history-days', type=int, default=None)
+    parser.add_argument('--reference-timeframe', default=None,
+                         help='Ueberschreibt barrier_strategy_settings.reference_timeframe (z.B. fuer '
+                              'optimize_barrier_model.py). Beim Aendern context_timeframes in settings.json '
+                              'im Auge behalten -- der neue Referenz-Timeframe sollte dort nicht doppelt '
+                              'als Kontext-Block auftauchen.')
     parser.add_argument('--no-cache', action='store_true')
     args = parser.parse_args()
 
-    settings = load_settings()
-    barrier_cfg = settings['barrier_strategy_settings']
+    barrier_cfg = load_barrier_config(symbol=args.symbol, reference_timeframe=args.reference_timeframe)
 
-    symbol = args.symbol or barrier_cfg.get('symbol', 'BTC/USDT:USDT')
+    symbol = barrier_cfg['symbol']
     history_days = args.history_days or barrier_cfg['history_days']
-    reference_tf = barrier_cfg.get('reference_timeframe', '4h')
+    reference_tf = barrier_cfg['reference_timeframe']
     intraday_tf = barrier_cfg.get('intraday_timeframe', '15m')
-    context_tfs = barrier_cfg.get('context_timeframes', [])
+    # reference_tf aus context_timeframes ausschliessen -- relevant, wenn --reference-timeframe
+    # einen Wert setzt, der in settings.json noch als Kontext-Timeframe gelistet ist (sonst
+    # taucht dieselbe Zeitebene doppelt auf: einmal als Referenz-, einmal als Kontext-Block).
+    context_tfs = [tf for tf in barrier_cfg.get('context_timeframes', []) if tf != reference_tf]
     barrier_pct = barrier_cfg.get('barrier_pct', 1.0)
     max_depth = barrier_cfg.get('model_max_depth', 3)
     val_split = barrier_cfg['val_split']

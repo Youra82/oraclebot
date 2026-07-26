@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 
+from oraclebot.analysis.evaluation import build_trades, run_anti_martingale_backtest
 from oraclebot.data.dataset import load_dataset_jsonl
 from oraclebot.model.barrier_model import BarrierPredictor
-from oraclebot.strategy.anti_martingale import compute_margin, record_pending_position, resolve_pending_outcome
-from oraclebot.strategy.barrier_signal import compute_barrier_signal
+from oraclebot.utils.config import load_barrier_config, load_settings
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..')
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'datasets')
@@ -31,11 +31,6 @@ def load_secrets() -> dict:
     if not os.path.exists(secret_path):
         return {}
     with open(secret_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def load_settings() -> dict:
-    with open(os.path.join(PROJECT_ROOT, 'settings.json'), 'r', encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -72,77 +67,6 @@ def load_predictions(barrier_cfg: dict):
     return preds, safe_symbol
 
 
-def build_trades(preds: list, barrier_cfg: dict) -> list:
-    """Baut serielle Trades aus den Vorhersagen: nur Signale >= min_confidence, ein Trade
-    laeuft bis zu seinem eigenen exit_time, alle Referenzkerzen darin werden uebersprungen
-    (kein Stacking, wie live_trade.py es auch nicht erlaubt)."""
-    barrier_pct = barrier_cfg['barrier_pct']
-    min_conf = barrier_cfg['min_confidence']
-    trades = []
-    idx = 0
-    while idx < len(preds):
-        p = preds[idx]
-        signal = compute_barrier_signal(p['cls'], p['conf'], p['entry'],
-                                         min_confidence=min_conf, barrier_pct=barrier_pct)
-        if signal['direction'] is None:
-            idx += 1
-            continue
-        won = (p['cls'] == p['label'])
-        pnl_price = signal['tp_distance'] if won else -signal['sl_distance']
-        exit_price = signal['take_profit'] if won else signal['stop_loss']
-        trades.append({
-            'entry_time': pd.Timestamp(p['date']), 'exit_time': p['exit_time'], 'entry': p['entry'],
-            'exit': exit_price, 'direction': signal['direction'], 'frac': pnl_price / p['entry'],
-            'outcome': 'win' if won else 'loss',
-        })
-        while idx < len(preds) and preds[idx]['date'] <= p['exit_time'].isoformat():
-            idx += 1
-    return trades
-
-
-def run_anti_martingale_backtest(trades: list, barrier_cfg: dict) -> dict:
-    """Simuliert die Anti-Martingale-Positionsgroesse (echte Module aus anti_martingale.py)
-    MIT Taker-Gebuehren (settings.json: taker_fee_rate_pct, Entry+Exit = 2 Taker-Fills) --
-    ohne Gebuehren wirkt jede Kalibrierung bei 100x Hebel deutlich zu optimistisch (siehe
-    README, Rekalibrierung 2026-07-26). Schreibt margin_used/pnl_usdt/equity_after direkt in
-    die trades-Dicts (fuer den Excel-Export weiterverwendbar)."""
-    leverage = barrier_cfg['leverage']
-    barrier_pct = barrier_cfg['barrier_pct']
-    start_capital = barrier_cfg.get('backtest_start_capital', 15.0)
-    fee_rate = barrier_cfg.get('taker_fee_rate_pct', 0.06) / 100.0
-    am_base = barrier_cfg['anti_martingale_base_pct']
-    am_growth = barrier_cfg['anti_martingale_growth_factor']
-    am_streak_target = int(barrier_cfg['anti_martingale_streak_target'])
-
-    # anti_martingale.resolve_pending_outcome() loggt pro Position (sinnvoll im Live-Betrieb,
-    # 1 Aufruf pro 4h) -- bei einem 684-Trade-Backtest waere das reine Zeilen-Rauschen.
-    logging.getLogger('oraclebot.strategy.anti_martingale').setLevel(logging.WARNING)
-
-    am_state = {'stake_pct': am_base, 'consecutive_wins': 0, 'pending_position': None}
-    capital = start_capital
-    peak = capital
-    max_dd = 0.0
-    for t in trades:
-        margin = compute_margin(capital, am_state)
-        balance_before = capital
-        distance = t['entry'] * barrier_pct / 100.0
-        contracts = (margin * leverage) / t['entry']
-        fee = margin * leverage * fee_rate * 2
-        pnl_usd = t['frac'] * leverage * margin - fee
-        capital += pnl_usd
-        capital = max(capital, 0.0)
-        peak = max(peak, capital)
-        max_dd = max(max_dd, (peak - capital) / peak if peak > 0 else 0.0)
-        expected_win_balance = balance_before + distance * contracts - fee
-        expected_loss_balance = balance_before - distance * contracts - fee
-        am_state = record_pending_position(am_state, balance_before, expected_win_balance, expected_loss_balance)
-        am_state = resolve_pending_outcome(am_state, capital, am_base, am_growth, am_streak_target)
-        t['margin_used'] = margin
-        t['pnl_usdt'] = pnl_usd
-        t['equity_after'] = capital
-    return {'end_capital': capital, 'start_capital': start_capital, 'max_dd_pct': max_dd * 100}
-
-
 def print_summary(trades: list, backtest: dict, safe_symbol: str, reference_tf: str):
     wins = sum(1 for t in trades if t['outcome'] == 'win')
     win_rate = wins / len(trades) * 100 if trades else 0.0
@@ -176,13 +100,15 @@ def print_summary(trades: list, backtest: dict, safe_symbol: str, reference_tf: 
 
 
 def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol: str):
+    """Interaktives HTML-Chart (Plotly), Stil analog zu zerobots
+    run_portfolio_optimizer.py::generate_equity_html -- Rangeslider, 'x unified'-Hover,
+    plotly_white-Template, dieselben Win/Loss-Marker-Farben. Ersetzt das fruehere statische
+    PNG (matplotlib) komplett, siehe README."""
     try:
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.dates as mdates
-        import matplotlib.pyplot as plt
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
     except ImportError:
-        logger.error("matplotlib nicht installiert -- Chart uebersprungen (pip install matplotlib).")
+        logger.error("plotly nicht installiert -- Chart uebersprungen (pip install plotly).")
         return None
 
     from oraclebot.utils.data_fetch import fetch_all_timeframes
@@ -197,6 +123,7 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
 
     wins = [t for t in trades if t['outcome'] == 'win']
     liqs = [t for t in trades if t['outcome'] == 'loss']
+    win_rate = len(wins) / len(trades) * 100
 
     # Kapitalkurve war bereits Teil von run_anti_martingale_backtest() (equity_after pro Trade).
     dates_ = [trades[0]['entry_time']] + [t['entry_time'] for t in trades]
@@ -218,54 +145,65 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
     plot_end = trades[-1]['entry_time'] + pd.Timedelta(days=3)
     price_zoom = price_df[(price_df.index >= plot_start) & (price_df.index <= plot_end)]
 
-    fig, (ax_price, ax_equity, ax_streak) = plt.subplots(
-        3, 1, figsize=(15, 12), dpi=120, gridspec_kw={'height_ratios': [2, 1.3, 0.9]}, sharex=False)
+    title = (f"{symbol} -- {reference_tf}-Barriere-Modell, conf>={barrier_cfg.get('min_confidence', 0.60):.2f} "
+             f"(SL=TP={barrier_cfg['barrier_pct']:.0f}%, Hebel={barrier_cfg['leverage']}x) | "
+             f"{len(trades)} Trades | WR: {win_rate:.1f}% | MaxDD: {backtest['max_dd_pct']:.1f}%")
 
-    ax_price.plot(price_zoom.index, price_zoom['close'], color='#888888', linewidth=0.9, alpha=0.7,
-                  label=f'{symbol.split("/")[0]} Close ({reference_tf})')
-    ax_price.scatter([t['entry_time'] for t in wins], [t['entry'] for t in wins],
-                      marker='^', color='#26a69a', s=18, zorder=3, alpha=0.75, label=f'Win (n={len(wins)})')
-    ax_price.scatter([t['entry_time'] for t in liqs], [t['entry'] for t in liqs],
-                      marker='v', color='#ef5350', s=18, zorder=3, alpha=0.75, label=f'Liquidation (n={len(liqs)})')
-    win_rate = len(wins) / len(trades) * 100
-    ax_price.set_ylabel('USDT')
-    ax_price.set_title(f'{symbol} -- {reference_tf}-Barriere-Modell, conf>={barrier_cfg["min_confidence"]:.2f} '
-                        f'(SL=TP={barrier_cfg["barrier_pct"]:.0f}%, Hebel={barrier_cfg["leverage"]}x): '
-                        f'{len(trades)} Trades, {len(wins)}W/{len(liqs)}L ({win_rate:.1f}% Winrate)')
-    ax_price.legend(loc='upper left', fontsize=9)
-    ax_price.grid(alpha=0.2)
-    ax_price.set_xlim(plot_start, plot_end)
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                         row_heights=[0.5, 0.32, 0.18],
+                         subplot_titles=(f"{symbol.split('/')[0]} Close ({reference_tf}) + Trades",
+                                         f"Anti-Martingale-Kapitalkurve (Start={start_capital:.0f} USDT, inkl. Gebuehren)",
+                                         f"Laufende Serie -- laengste Gewinn-Serie={max_win_streak}, "
+                                         f"laengste Liq-Serie={max_liq_streak}"))
 
-    ax_equity.plot(dates_, capitals, color='#ab47bc', linewidth=1.1,
-                    label=f'Anti-Martingale (Basis={barrier_cfg["anti_martingale_base_pct"]:.2f}%) '
-                          f'-> {capitals[-1]:.2e} USDT')
-    ax_equity.axhline(start_capital, color='gray', linestyle=':', linewidth=0.8, alpha=0.6)
-    ax_equity.set_yscale('log')
-    ax_equity.set_ylabel('USDT (log)')
-    ax_equity.set_title(f'Kapitalkurve (Start={start_capital:.0f} USDT, inkl. Gebuehren) '
-                         f'-- MaxDD={backtest["max_dd_pct"]:.1f}%')
-    ax_equity.legend(loc='upper left', fontsize=9)
-    ax_equity.grid(alpha=0.2, which='both')
+    fig.add_trace(go.Scatter(
+        x=price_zoom.index, y=price_zoom['close'], mode='lines', name=f"{symbol.split('/')[0]} Close",
+        line=dict(color='#94a3b8', width=1), opacity=0.8,
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=[t['entry_time'] for t in wins], y=[t['entry'] for t in wins], mode='markers',
+        name=f'Win (n={len(wins)})',
+        marker=dict(color='#26a69a', symbol='triangle-up', size=9, line=dict(width=1, color='#0f766e')),
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=[t['entry_time'] for t in liqs], y=[t['entry'] for t in liqs], mode='markers',
+        name=f'Liquidation (n={len(liqs)})',
+        marker=dict(color='#ef5350', symbol='triangle-down', size=9, line=dict(width=1, color='#7f1d1d')),
+    ), row=1, col=1)
 
-    colors2 = ['#26a69a' if v > 0 else '#ef5350' for v in streak_values]
-    ax_streak.bar([t['entry_time'] for t in trades], streak_values, color=colors2, width=0.15)
-    ax_streak.axhline(0, color='black', linewidth=0.8)
-    ax_streak.set_ylabel('Serienlaenge')
-    ax_streak.set_xlabel('Datum')
-    ax_streak.set_title(f'Laufende Serie -- laengste Gewinn-Serie={max_win_streak}, laengste Liq-Serie={max_liq_streak}')
-    ax_streak.grid(alpha=0.2)
+    fig.add_trace(go.Scatter(
+        x=dates_, y=capitals, mode='lines', name=f"Anti-Martingale (Basis={barrier_cfg.get('anti_martingale_base_pct', 5.0):.2f}%)",
+        line=dict(color='#2563eb', width=2), opacity=0.85,
+    ), row=2, col=1)
+    fig.add_hline(y=start_capital, line=dict(color='rgba(100,100,100,0.4)', width=1, dash='dash'),
+                  annotation_text=f'Start {start_capital:.0f} USDT', annotation_position='top left', row=2, col=1)
+    fig.update_yaxes(type='log', title_text='USDT (log)', row=2, col=1)
 
-    for ax in (ax_price, ax_equity, ax_streak):
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        ax.set_xlim(plot_start, plot_end)
+    streak_colors = ['#26a69a' if v > 0 else '#ef5350' for v in streak_values]
+    fig.add_trace(go.Bar(
+        x=[t['entry_time'] for t in trades], y=streak_values, name='Serienlaenge',
+        marker_color=streak_colors, showlegend=False,
+    ), row=3, col=1)
+    fig.add_hline(y=0, line=dict(color='black', width=0.8), row=3, col=1)
+    fig.update_yaxes(title_text='Serienlaenge', row=3, col=1)
 
-    fig.tight_layout()
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13), x=0.5, xanchor='center'),
+        height=900,
+        hovermode='x unified',
+        template='plotly_white',
+        dragmode='zoom',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        xaxis3=dict(rangeslider=dict(visible=True), range=[plot_start, plot_end]),
+        xaxis=dict(range=[plot_start, plot_end]),
+        xaxis2=dict(range=[plot_start, plot_end]),
+    )
+    fig.update_yaxes(title_text='USDT', row=1, col=1)
+
     os.makedirs(CHARTS_DIR, exist_ok=True)
-    outfile = os.path.join(CHARTS_DIR, 'combined_overview.png')
-    fig.savefig(outfile)
-    logger.info(f"Chart gespeichert: {outfile}")
+    outfile = os.path.join(CHARTS_DIR, 'combined_overview.html')
+    fig.write_html(outfile)
+    logger.info(f"Chart gespeichert: {outfile} (laengste Gewinn-Serie={max_win_streak}, laengste Liq-Serie={max_liq_streak})")
     return outfile
 
 
@@ -389,7 +327,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     settings = load_settings()
-    barrier_cfg = settings['barrier_strategy_settings']
+    barrier_cfg = load_barrier_config(settings)
     if args.start_capital is not None:
         barrier_cfg['backtest_start_capital'] = args.start_capital
     preds, safe_symbol = load_predictions(barrier_cfg)
@@ -409,10 +347,14 @@ if __name__ == '__main__':
         logger.info('')
         chart_path = generate_chart(trades, barrier_cfg, backtest, safe_symbol)
         if chart_path and telegram_enabled:
-            from oraclebot.utils.telegram import send_photo
-            caption = (f"oraclebot combined_overview.png\n"
+            # HTML (interaktives Plotly-Chart) -- Telegram wuerde eine .html-Datei per
+            # sendPhoto entweder ablehnen oder als reine Bilddatei fehlinterpretieren, daher
+            # sendDocument (wie beim Excel-Export), auch wenn die Datei nicht direkt in
+            # Telegram angezeigt wird -- lokal herunterladen und im Browser oeffnen.
+            from oraclebot.utils.telegram import send_document
+            caption = (f"oraclebot combined_overview.html\n"
                        f"{len(trades)} Trades, {win_rate:.1f}% Winrate, MaxDD {backtest['max_dd_pct']:.1f}%")
-            send_photo(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=caption)
+            send_document(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), chart_path, caption=caption)
 
     if args.excel:
         logger.info('')

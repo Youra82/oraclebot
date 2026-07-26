@@ -21,6 +21,8 @@ from oraclebot.data.features import compute_features
 from oraclebot.model.barrier_model import BarrierPredictor
 from oraclebot.strategy.barrier_signal import compute_barrier_signal
 from oraclebot.utils.barrier_gate import check_barrier_gate, mark_barrier_run_complete
+from oraclebot.utils.config import load_barrier_config
+from oraclebot.utils.config import load_settings as load_settings_json
 from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message
 
@@ -42,11 +44,6 @@ def _drop_incomplete_last_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFra
     return df.iloc[:-1] if now < close_time else df
 
 
-def load_settings(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
 def load_secrets(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -65,9 +62,8 @@ if __name__ == '__main__':
     parser.add_argument('--marker-path', type=str, default=None)
     args = parser.parse_args()
 
-    settings_path = os.path.join(os.path.dirname(__file__), '..', 'settings.json')
-    settings = load_settings(settings_path)
-    barrier_cfg = settings['barrier_strategy_settings']
+    settings = load_settings_json()
+    barrier_cfg = load_barrier_config(settings)
 
     symbol = barrier_cfg.get('symbol', 'BTC/USDT:USDT')
     reference_tf = barrier_cfg.get('reference_timeframe', '4h')

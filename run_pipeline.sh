@@ -60,19 +60,28 @@ fi
 # wiederholt nur einen Bruchteil der angefragten Historie -- '1M' wird deshalb inzwischen gar
 # nicht mehr direkt abgefragt, sondern aus '1d' abgeleitet (siehe data_fetch.py). Die
 # Entkopplung bleibt trotzdem sinnvoll als generelle Vorsichtsmassnahme.
+SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json'))['barrier_strategy_settings']['symbol'])" 2>/dev/null)
+REFERENCE_TF=$(python3 -c "import json; print(json.load(open('settings.json'))['barrier_strategy_settings']['reference_timeframe'])" 2>/dev/null)
+SAFE_SYMBOL=$(echo "$SYMBOL" | tr '/:' '__')
+CONFIG_PATH="src/oraclebot/strategy/configs/config_${SAFE_SYMBOL}_${REFERENCE_TF}.json"
+
 echo ""
 echo -e "${CYAN}ℹ  Hinweis: oraclebot hat keine Datenbank und kein inkrementelles Lernen -- jedes${NC}"
 echo -e "${CYAN}   Training ist ohnehin ein kompletter Neustart. \"Loeschen\" entfernt nur lokale${NC}"
-echo -e "${CYAN}   Ergebnisdateien, aendert aber nichts am eigentlichen Trainingsergebnis.${NC}"
-read -p "Bisheriges Modell, Trainingsdatensatz und Diagnose loeschen und komplett neu anfangen? (j/n) [Standard: n]: " RESET_ALL
+echo -e "${CYAN}   Ergebnisdateien, aendert aber nichts am eigentlichen Trainingsergebnis. Die${NC}"
+echo -e "${CYAN}   Strategie-Config (min_confidence/model_max_depth/Anti-Martingale, siehe${NC}"
+echo -e "${CYAN}   $CONFIG_PATH) wird MIT geloescht -- danach gelten Code-Standardwerte,${NC}"
+echo -e "${CYAN}   bis ./optimize.sh erneut laeuft.${NC}"
+read -p "Bisheriges Modell, Trainingsdatensatz, Diagnose UND Strategie-Config loeschen und komplett neu anfangen? (j/n) [Standard: n]: " RESET_ALL
 RESET_ALL="${RESET_ALL//[$'\r\n ']/}"
 if [[ "$RESET_ALL" == "j" || "$RESET_ALL" == "J" || "$RESET_ALL" == "y" || "$RESET_ALL" == "Y" ]]; then
     rm -f artifacts/datasets/barrier_model_*.pkl
     rm -f artifacts/datasets/barrier_*.jsonl
     rm -f artifacts/datasets/barrier_diagnostics_*.json
-    echo -e "${GREEN}✔ Modell/Datensatz/Diagnose geloescht -- kompletter Neustart.${NC}"
+    rm -f "$CONFIG_PATH"
+    echo -e "${GREEN}✔ Modell/Datensatz/Diagnose/Strategie-Config geloescht -- kompletter Neustart.${NC}"
 else
-    echo -e "${GREEN}✔ Bestehendes Modell/Datensatz bleiben vorerst erhalten (werden gleich ueberschrieben).${NC}"
+    echo -e "${GREEN}✔ Bestehendes Modell/Datensatz/Config bleiben vorerst erhalten (werden gleich ueberschrieben).${NC}"
 fi
 
 echo ""

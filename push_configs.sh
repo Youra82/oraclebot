@@ -1,10 +1,10 @@
 #!/bin/bash
-# push_configs.sh — trainiertes Modell + settings.json committen und pushen
+# push_configs.sh — trainiertes Modell + Coin/Timeframe-Config + settings.json committen/pushen
 #
-# Analog zu zerobot/dnabot's push_configs.sh, aber angepasst an oraclebot: kein
-# "configs/"-Verzeichnis mit mehreren Symbol/Timeframe-Configs (nur EIN Symbol/Modell), daher
-# werden hier direkt die zwei Artefakte gepusht, die ein ./run_pipeline.sh-Lauf veraendert:
-# artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl (git-getrackt) + settings.json.
+# Analog zu zerobot/dnabot's push_configs.sh: pusht die Config-Datei(en) im
+# src/oraclebot/strategy/configs/-Verzeichnis. Anders als bei denen gibt es hier nur EIN
+# Symbol/Modell (kein active_strategies-Array), daher immer genau eine Config-Datei + das
+# git-getrackte Modell + settings.json (falls sich strukturelle Einstellungen geaendert haben).
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -15,7 +15,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 cd "$SCRIPT_DIR"
 
 echo ""
-echo -e "${YELLOW}========== ORACLEBOT MODELL + SETTINGS PUSHEN ==========${NC}"
+echo -e "${YELLOW}========== ORACLEBOT MODELL + CONFIG + SETTINGS PUSHEN ==========${NC}"
 echo ""
 
 SYMBOL=$(python3 -c "import json; print(json.load(open('settings.json'))['barrier_strategy_settings']['symbol'])" 2>/dev/null)
@@ -23,6 +23,7 @@ REFERENCE_TF=$(python3 -c "import json; print(json.load(open('settings.json'))['
 SAFE_SYMBOL=$(echo "$SYMBOL" | tr '/:' '__')
 MODEL_PATH="artifacts/datasets/barrier_model_${SAFE_SYMBOL}_${REFERENCE_TF}.pkl"
 DIAGNOSTICS_PATH="artifacts/datasets/barrier_diagnostics_${SAFE_SYMBOL}_${REFERENCE_TF}.json"
+CONFIG_PATH="src/oraclebot/strategy/configs/config_${SAFE_SYMBOL}_${REFERENCE_TF}.json"
 
 if [ ! -f "$MODEL_PATH" ]; then
     echo -e "${RED}❌ Kein trainiertes Modell gefunden: $MODEL_PATH${NC}"
@@ -46,24 +47,40 @@ else
 fi
 echo ""
 
-# Relevante settings.json-Werte anzeigen
-echo "settings.json (barrier_strategy_settings):"
+# Strategie-Config anzeigen (vom Optimizer gefundene Parameter -- siehe
+# src/oraclebot/utils/config.py fuer die Trennung Config-Datei/settings.json)
+if [ -f "$CONFIG_PATH" ]; then
+    echo "Strategie-Config ($CONFIG_PATH):"
+    python3 -c "
+import json
+with open('$CONFIG_PATH') as f:
+    c = json.load(f)
+print(f\"  min_confidence={c.get('min_confidence')} model_max_depth={c.get('model_max_depth')}\")
+print(f\"  Anti-Martingale: base_pct={c.get('anti_martingale_base_pct')}% growth={c.get('anti_martingale_growth_factor')}x streak={c.get('anti_martingale_streak_target')}\")
+" 2>/dev/null || echo "  (Konnte Config nicht parsen)"
+else
+    echo -e "${RED}❌ Keine Strategie-Config gefunden: $CONFIG_PATH${NC}"
+    echo "   Ungewoehnlich -- sollte spaetestens seit dem Umstieg auf das Coin/Timeframe-Config-Muster existieren."
+fi
+echo ""
+
+# Strukturelle settings.json-Werte anzeigen
+echo "settings.json (barrier_strategy_settings, strukturell):"
 python3 -c "
 import json
 with open('settings.json') as f:
     s = json.load(f)['barrier_strategy_settings']
-print(f\"  Symbol: {s['symbol']} ({s['reference_timeframe']}) | min_confidence={s['min_confidence']}\")
-print(f\"  Anti-Martingale: enabled={s['anti_martingale_enabled']} base_pct={s['anti_martingale_base_pct']}%\")
-print(f\"  Live-Trading: {s['live_trading_enabled']}\")
+print(f\"  Symbol: {s['symbol']} ({s['reference_timeframe']}) | Hebel={s['leverage']}x\")
+print(f\"  Anti-Martingale aktiv: {s['anti_martingale_enabled']} | Live-Trading: {s['live_trading_enabled']}\")
 " 2>/dev/null || echo "  (Konnte settings.json nicht parsen)"
 echo ""
 
 # Änderungen stagen
-git add "$MODEL_PATH" settings.json
+git add "$MODEL_PATH" "$CONFIG_PATH" settings.json
 STAGED=$(git diff --cached --name-only)
 
 if [ -z "$STAGED" ]; then
-    echo -e "${YELLOW}ℹ  Keine Änderungen — Modell + settings.json bereits aktuell im Repo.${NC}"
+    echo -e "${YELLOW}ℹ  Keine Änderungen — Modell/Config/settings.json bereits aktuell im Repo.${NC}"
     exit 0
 fi
 
@@ -73,7 +90,7 @@ echo ""
 
 # Commit
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-git commit -m "Retrain: update model + settings ($TIMESTAMP)"
+git commit -m "Retrain: update model + config + settings ($TIMESTAMP)"
 
 # Push (mit Rebase-Retry bei Konflikt, wie bei den anderen Bots)
 echo ""
@@ -82,7 +99,7 @@ git push origin HEAD:main
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo -e "${GREEN}✅ Modell + settings.json erfolgreich gepusht!${NC}"
+    echo -e "${GREEN}✅ Modell + Config + settings.json erfolgreich gepusht!${NC}"
     echo "   Auf dem VPS jetzt: ./update.sh"
 else
     echo ""
@@ -95,7 +112,7 @@ else
     git push origin HEAD:main
     if [ $? -eq 0 ]; then
         echo ""
-        echo -e "${GREEN}✅ Modell + settings.json erfolgreich gepusht!${NC}"
+        echo -e "${GREEN}✅ Modell + Config + settings.json erfolgreich gepusht!${NC}"
         echo "   Auf dem VPS jetzt: ./update.sh"
     else
         echo -e "${RED}❌ Push nach Rebase fehlgeschlagen.${NC}"
