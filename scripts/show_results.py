@@ -222,6 +222,15 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
         if not trades:
             logger.error(f"Keine Trades ab {since} im Out-of-Sample-Zeitraum.")
             return None
+        # Bugfix 2026-07-26: trades tragen an dieser Stelle noch margin_used/pnl_usdt/
+        # equity_after aus dem VOLLEN, ungefilterten Anti-Martingale-Lauf oben (vor dem Filtern)
+        # -- die Kapitalkurve wuerde also den bereits verzinsten Stand von VOR `since` einfach
+        # fortsetzen statt wirklich frisch bei backtest_start_capital zu beginnen, obwohl genau
+        # das dokumentiert ist ("Kapitalkurve startet fuer den Export dann frisch"). Deshalb den
+        # Anti-Martingale-Backtest hier NOCHMAL, nur auf den gefilterten Trades, laufen lassen --
+        # das ueberschreibt margin_used/pnl_usdt/equity_after mit Werten, die tatsaechlich bei
+        # backtest_start_capital ab `since` neu anfangen.
+        run_anti_martingale_backtest(trades, barrier_cfg)
 
     coin = barrier_cfg['symbol'].split('/')[0]
     reference_tf = barrier_cfg['reference_timeframe']
@@ -338,6 +347,11 @@ if __name__ == '__main__':
 
     backtest = run_anti_martingale_backtest(trades, barrier_cfg)
     print_summary(trades, backtest, safe_symbol, barrier_cfg['reference_timeframe'])
+    if args.since:
+        logger.info(f"Hinweis: Obige Zusammenfassung bezieht sich auf den GESAMTEN "
+                    f"Out-of-Sample-Zeitraum -- der --since-Filter ({args.since}) gilt nur fuer "
+                    f"den Excel-Export unten, der separat und mit frisch bei "
+                    f"backtest_start_capital neu startender Kapitalkurve berechnet wird.")
 
     telegram_enabled = settings.get('notification_settings', {}).get('telegram_enabled', False)
     telegram_cfg = load_secrets().get('telegram', {}) if telegram_enabled else {}
