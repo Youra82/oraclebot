@@ -433,12 +433,37 @@ nötig.
 ## Tägliche Verwaltung & wichtige Befehle
 
 ```bash
-tail -f logs/cron.log                                              # Live mitverfolgen
-grep -i "ERROR" logs/cron.log                                      # Nach Fehlern suchen
+tail -n 100 logs/cron.log                                          # Letzte Zeilen ansehen
+tail -f logs/cron.log                                               # Live mitverfolgen
+grep -i "ERROR" logs/cron.log                                       # Nach Fehlern suchen
+crontab -l                                                          # Aktuellen Cronjob anzeigen
 cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_barrier.py --force   # Manueller Testlauf
-PYTHONPATH=src python -m pytest tests/                             # Tests ausfuehren
-./update.sh                                                        # Bot aktualisieren
+PYTHONPATH=src python -m pytest tests/                              # Tests ausfuehren
+./update.sh                                                         # Bot aktualisieren
 ```
+
+#### Cronjob zeigt `FileNotFoundError` / veraltete Fehlermeldungen nach einem Update
+
+Passiert, wenn der Cronjob noch auf einen alten, inzwischen umbenannten/gelöschten Skriptnamen
+zeigt (z.B. `predict_next_candle.py` aus der alten Tages-Strategie, ersetzt durch
+`predict_next_barrier.py` — genau dieser Fall trat 2026-07-26 auf einem VPS auf: `update.sh`
+löschte die alte Datei, aber der Cronjob selbst wird von `update.sh` nicht angefasst). Symptom
+in `logs/cron.log`: wiederholte `can't open file '.../predict_next_candle.py'`-Zeilen bei jedem
+15-Minuten-Takt. Fix, ohne den ganzen Cronjob neu abzutippen (ersetzt nur den Skriptnamen,
+Lock-Datei/Kommentar/Offset bleiben erhalten):
+
+```bash
+crontab -l | sed 's/predict_next_candle\.py/predict_next_barrier.py/' | crontab -
+crontab -l   # zur Kontrolle: sollte jetzt predict_next_barrier.py zeigen
+```
+
+**Test, dass der Fix wirkt:** nach ca. 15-20 Minuten (ein Cron-Tick + 60s Offset)
+`tail -n 20 logs/cron.log` prüfen — Erfolg ist eine Zeile mit **"Ausserhalb des
+4h-Ausfuehrungsfensters..."** (aktuelle Formulierung aus `barrier_gate.py`), nicht mehr die
+alte "Ausserhalb des taeglichen Ausfuehrungsfensters" oder ein `FileNotFoundError`. Den
+vollständigen Lauf (mit echter Vorhersage + Telegram-Nachricht) gibt es dann beim nächsten
+echten 4h-Fenster (00/04/08/12/16/20 UTC) zu sehen, am besten mit `tail -f logs/cron.log`
+live mitverfolgt.
 
 #### Neu trainieren (nur auf der Trainings-Maschine, nicht auf dem VPS)
 
