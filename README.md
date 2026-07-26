@@ -396,14 +396,21 @@ nur wenige, wirklich relevante Optionen ab.
 ./run_pipeline.sh
 ```
 
-Fragt optional `history_days`-Override, dann ob alle bisherigen Artefakte gelöscht und
-komplett neu begonnen werden soll (löscht Modell, Trainingsdatensatz, Diagnose und den
-OHLCV-Trainings-Cache — **nicht** den separaten Live-Inferenz-Cache von
-`predict_next_barrier.py`). Anders als bei dnabot (Genome-Datenbank, akkumuliert Wissen über
-mehrere Läufe) gibt es hier **keine Datenbank und kein inkrementelles Lernen** — jeder
-`train_barrier_model.py`-Lauf trainiert ohnehin komplett neu (kein Warm-Start), das Löschen ist
-rein aufräumend und ändert das Trainingsergebnis selbst nicht. Bei "nein" wird stattdessen nur
-gefragt, ob der OHLCV-Cache verworfen werden soll.
+Fragt optional `history_days`-Override, dann zwei **unabhängige** Fragen:
+
+1. Bisheriges Modell, Trainingsdatensatz und Diagnose löschen und komplett neu beginnen?
+   Anders als bei dnabot (Genome-Datenbank, akkumuliert Wissen über mehrere Läufe) gibt es hier
+   **keine Datenbank und kein inkrementelles Lernen** — jeder `train_barrier_model.py`-Lauf
+   trainiert ohnehin komplett neu (kein Warm-Start), das Löschen ist rein aufräumend und ändert
+   das Trainingsergebnis selbst nicht.
+2. Gecachte OHLCV-Daten ignorieren und frisch abrufen?
+
+Bewusst **entkoppelt** (nicht wie zuerst umgesetzt an Frage 1 gekoppelt): Bitgets `1M`-Endpunkt
+lieferte bei einem VPS-Komplettabruf 2026-07-26 nur 1 von 50 angefragten Kerzen — zu wenig fürs
+Feature-Warmup, das Training brach ab (siehe Troubleshooting unten). Ein "kompletter Neustart"
+soll dieses Risiko nicht automatisch mit auslösen; der OHLCV-Neuabruf bleibt eine bewusste,
+separate Entscheidung. Der OHLCV-Trainings-Cache ist ohnehin getrennt vom Live-Inferenz-Cache
+von `predict_next_barrier.py` — Frage 2 betrifft nie Letzteren.
 
 Ruft dann `train_barrier_model.py` auf: lädt (gecachte) OHLCV-Daten für `reference_timeframe` +
 `intraday_timeframe` + `context_timeframes` (Standard: 4h, 15m, 1M, 1w, 1d, 1h), baut die

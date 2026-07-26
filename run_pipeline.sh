@@ -48,36 +48,43 @@ fi
 # Anders als bei dnabot (Genome-DB, akkumuliert Wissen ueber mehrere Laeufe) gibt es hier
 # KEINE Datenbank und KEIN inkrementelles Lernen -- jeder train_barrier_model.py-Lauf trainiert
 # das Modell ohnehin komplett neu (kein Warm-Start), unabhaengig vom vorherigen Modellstand.
-# "Neu anfangen" bedeutet hier: alle lokal generierten Artefakte (Modell, Trainingsdatensatz,
-# Diagnose, OHLCV-Cache) loeschen -- rein kosmetisch/aufraeumend, aendert das Trainingsergebnis
-# selbst NICHT. Betrifft NICHT den Live-Zustand (artifacts/state/anti_martingale_state.json)
-# -- der wird hier bewusst nicht angefasst, auch wenn live_trading_enabled aktiv ist.
+# "Neu anfangen" bedeutet hier: Modell/Trainingsdatensatz/Diagnose loeschen -- rein
+# kosmetisch/aufraeumend, aendert das Trainingsergebnis selbst NICHT. Betrifft NICHT den
+# Live-Zustand (artifacts/state/anti_martingale_state.json) -- der wird hier bewusst nicht
+# angefasst, auch wenn live_trading_enabled aktiv ist.
+#
+# WICHTIG (2026-07-26 auf einem VPS beobachtet): den OHLCV-Cache NICHT automatisch mitloeschen.
+# Bitgets 1M-Endpunkt liefert bei einem kompletten Kaltstart-Abruf manchmal nur einen Bruchteil
+# der angefragten Historie (z.B. 1 von 50 Kerzen) -- zu wenig fuers Feature-Warmup, das Training
+# bricht dann ab (siehe README-Troubleshooting). Modell-Reset und OHLCV-Neuabruf sind daher zwei
+# UNABHAENGIGE Fragen, damit ein "kompletter Neustart" nicht automatisch dieses Risiko ausloest.
 echo ""
 echo -e "${CYAN}ℹ  Hinweis: oraclebot hat keine Datenbank und kein inkrementelles Lernen -- jedes${NC}"
 echo -e "${CYAN}   Training ist ohnehin ein kompletter Neustart. \"Loeschen\" entfernt nur lokale${NC}"
-echo -e "${CYAN}   Cache-/Ergebnisdateien, aendert aber nichts am eigentlichen Trainingsergebnis.${NC}"
-read -p "Alle bisherigen Artefakte (Modell, Datensatz, Diagnose, OHLCV-Cache) loeschen und komplett neu anfangen? (j/n) [Standard: n]: " RESET_ALL
+echo -e "${CYAN}   Ergebnisdateien, aendert aber nichts am eigentlichen Trainingsergebnis.${NC}"
+read -p "Bisheriges Modell, Trainingsdatensatz und Diagnose loeschen und komplett neu anfangen? (j/n) [Standard: n]: " RESET_ALL
 RESET_ALL="${RESET_ALL//[$'\r\n ']/}"
-CACHE_ARG=""
 if [[ "$RESET_ALL" == "j" || "$RESET_ALL" == "J" || "$RESET_ALL" == "y" || "$RESET_ALL" == "Y" ]]; then
     rm -f artifacts/datasets/barrier_model_*.pkl
     rm -f artifacts/datasets/barrier_*.jsonl
     rm -f artifacts/datasets/barrier_diagnostics_*.json
-    # "ohlcv_live_*.pkl" NICHT anfassen -- das ist predict_next_barrier.py's inkrementeller
-    # Live-Cache, unabhaengig vom Trainings-Cache (nur "ohlcv_<symbol>_<tf>_<limit>.pkl").
-    find artifacts/datasets -maxdepth 1 -name 'ohlcv_*.pkl' ! -name 'ohlcv_live_*.pkl' -delete
-    CACHE_ARG="--no-cache"
-    echo -e "${GREEN}✔ Alte Artefakte geloescht -- kompletter Neustart (inkl. frischem OHLCV-Abruf).${NC}"
+    echo -e "${GREEN}✔ Modell/Datensatz/Diagnose geloescht -- kompletter Neustart.${NC}"
 else
-    echo ""
-    read -p "Gecachte OHLCV-Daten ignorieren und frisch abrufen? (j/n) [Standard: n]: " NO_CACHE
-    NO_CACHE="${NO_CACHE//[$'\r\n ']/}"
-    if [[ "$NO_CACHE" == "j" || "$NO_CACHE" == "J" || "$NO_CACHE" == "y" || "$NO_CACHE" == "Y" ]]; then
-        CACHE_ARG="--no-cache"
-        echo -e "${CYAN}ℹ  Erzwinge frischen Abruf aller Timeframes (kann mehrere Minuten dauern).${NC}"
-    else
-        echo -e "${GREEN}✔ Nutze vorhandenen Cache, wo verfuegbar.${NC}"
-    fi
+    echo -e "${GREEN}✔ Bestehendes Modell/Datensatz bleiben vorerst erhalten (werden gleich ueberschrieben).${NC}"
+fi
+
+echo ""
+echo -e "${CYAN}ℹ  Achtung: Bitgets 1M-Endpunkt liefert bei einem kompletten Kaltstart-Abruf manchmal${NC}"
+echo -e "${CYAN}   deutlich weniger Historie als angefragt -- kann das Training abbrechen lassen${NC}"
+echo -e "${CYAN}   (siehe README-Troubleshooting). Im Zweifel hier \"n\" lassen.${NC}"
+read -p "Gecachte OHLCV-Daten ignorieren und frisch abrufen? (j/n) [Standard: n]: " NO_CACHE
+NO_CACHE="${NO_CACHE//[$'\r\n ']/}"
+CACHE_ARG=""
+if [[ "$NO_CACHE" == "j" || "$NO_CACHE" == "J" || "$NO_CACHE" == "y" || "$NO_CACHE" == "Y" ]]; then
+    CACHE_ARG="--no-cache"
+    echo -e "${CYAN}ℹ  Erzwinge frischen Abruf aller Timeframes (kann mehrere Minuten dauern).${NC}"
+else
+    echo -e "${GREEN}✔ Nutze vorhandenen Cache, wo verfuegbar.${NC}"
 fi
 
 # ── Pipeline starten ─────────────────────────────────────────────────────────
