@@ -79,18 +79,29 @@ echo ""
 git add "$MODEL_PATH" "$CONFIG_PATH" settings.json
 STAGED=$(git diff --cached --name-only)
 
-if [ -z "$STAGED" ]; then
-    echo -e "${YELLOW}ℹ  Keine Änderungen — Modell/Config/settings.json bereits aktuell im Repo.${NC}"
+# "Keine neuen Aenderungen zum Committen" bedeutet NICHT automatisch "nichts zu pushen" -- ein
+# vorheriger Lauf (oder ein zuvor fehlgeschlagener Push) kann bereits einen lokalen Commit
+# hinterlassen haben, der noch nicht auf origin liegt (Bug gefunden 2026-07-27: genau das blieb
+# unbemerkt lokal auf einem VPS haengen, das Skript meldete faelschlich "bereits aktuell").
+git fetch origin main --quiet 2>/dev/null
+UNPUSHED=$(git log origin/main..HEAD --oneline 2>/dev/null | wc -l)
+
+if [ -z "$STAGED" ] && [ "$UNPUSHED" -eq 0 ]; then
+    echo -e "${YELLOW}ℹ  Keine Änderungen — Modell/Config/settings.json bereits aktuell im Repo und gepusht.${NC}"
     exit 0
 fi
 
-echo "Geänderte Dateien:"
-git diff --cached --name-only | sed 's/^/  /'
-echo ""
+if [ -n "$STAGED" ]; then
+    echo "Geänderte Dateien:"
+    git diff --cached --name-only | sed 's/^/  /'
+    echo ""
 
-# Commit
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-git commit -m "Retrain: update model + config + settings ($TIMESTAMP)"
+    # Commit
+    TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
+    git commit -m "Retrain: update model + config + settings ($TIMESTAMP)"
+else
+    echo -e "${YELLOW}ℹ  Keine neuen Änderungen, aber $UNPUSHED lokale(r) Commit(s) noch nicht auf origin -- pushe trotzdem.${NC}"
+fi
 
 # Push (mit Rebase-Retry bei Konflikt, wie bei den anderen Bots)
 echo ""
