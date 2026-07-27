@@ -54,8 +54,11 @@ def test_since_filter_restarts_capital_curve_fresh_instead_of_carrying_over_prio
     capital_col = header.index('Gesamtkapital') + 1
     written_capitals = [ws.cell(row=r, column=capital_col).value for r in (2, 3)]
 
+    # abs statt rel-Toleranz: generate_excel() rundet 'Gesamtkapital' bewusst auf 4 Dezimalstellen
+    # fuer die Anzeige (round(t['equity_after'], 4)), eine rel=1e-6-Toleranz ist bei groesseren
+    # Werten enger als diese Rundung selbst erlauben kann.
     assert written_capitals == pytest.approx([fresh_trades[0]['equity_after'], fresh_trades[1]['equity_after']],
-                                              rel=1e-6)
+                                              abs=1e-4)
     # Vor dem Fix waere hier der (durch die ersten beiden Trades) bereits aufgezinste Stand
     # gelandet -- deutlich hoeher als der frische Wert.
     assert written_capitals[0] < inflated_third_trade_equity

@@ -1,4 +1,5 @@
 {
+    "leverage": 100,
     "min_confidence": 0.6,
     "model_max_depth": 3,
     "anti_martingale_base_pct": 4.03,
@@ -8,6 +9,7 @@
         "note": "Werte migriert aus settings.json (Stand 2026-07-26) beim Umstieg auf das Coin/Timeframe-Config-Muster -- noch kein optimize_barrier_model.py-Lauf.",
         "min_confidence_basis": "Sensitivitaets-Sweep (thorough_backtest_analysis.py, 2026-07-26): monoton steigende Winrate mit steigender Schwelle, 0.60 als Kompromiss Trades/Winrate gewaehlt.",
         "model_max_depth_basis": "Walk-Forward-Vergleich depth=2..6: nahezu identische Genauigkeit, 3 als Mittelweg.",
-        "anti_martingale_basis": "Fee-bewusste Bootstrap-Kalibrierung (3000 Neuordnungen, P90-MaxDD<=50%), rekalibriert 2026-07-26 nach Multi-Timeframe-Upgrade + Gebuehren-Einrechnung."
+        "anti_martingale_basis": "Fee-bewusste Bootstrap-Kalibrierung (3000 Neuordnungen, P90-MaxDD<=50%), rekalibriert 2026-07-26 nach Multi-Timeframe-Upgrade + Gebuehren-Einrechnung.",
+        "leverage_basis": "Uebernommen aus settings.json (Stand 2026-07-27) beim Umzug des Hebels in die Strategie-Config -- noch KEIN sicherheits-gefilterter Optimizer-Lauf. WICHTIG: naechster ./optimize.sh-Lauf sollte den Hebel neu gegen die Liquidations-Sicherheitsgrenze pruefen (siehe margin_safety.py, Fund 2026-07-27)."
     }
 }

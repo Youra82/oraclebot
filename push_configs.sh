@@ -55,7 +55,7 @@ if [ -f "$CONFIG_PATH" ]; then
 import json
 with open('$CONFIG_PATH') as f:
     c = json.load(f)
-print(f\"  min_confidence={c.get('min_confidence')} model_max_depth={c.get('model_max_depth')}\")
+print(f\"  Hebel={c.get('leverage')}x min_confidence={c.get('min_confidence')} model_max_depth={c.get('model_max_depth')}\")
 print(f\"  Anti-Martingale: base_pct={c.get('anti_martingale_base_pct')}% growth={c.get('anti_martingale_growth_factor')}x streak={c.get('anti_martingale_streak_target')}\")
 " 2>/dev/null || echo "  (Konnte Config nicht parsen)"
 else
@@ -70,7 +70,7 @@ python3 -c "
 import json
 with open('settings.json') as f:
     s = json.load(f)['barrier_strategy_settings']
-print(f\"  Symbol: {s['symbol']} ({s['reference_timeframe']}) | Hebel={s['leverage']}x\")
+print(f\"  Symbol: {s['symbol']} ({s['reference_timeframe']})\")
 print(f\"  Anti-Martingale aktiv: {s['anti_martingale_enabled']} | Live-Trading: {s['live_trading_enabled']}\")
 " 2>/dev/null || echo "  (Konnte settings.json nicht parsen)"
 echo ""

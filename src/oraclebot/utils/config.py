@@ -1,16 +1,19 @@
 # src/oraclebot/utils/config.py
-# Laedt settings.json (strukturelle Einstellungen: Symbol, Timeframes, Feature-Fenster, Hebel,
-# Live-Trading-Schalter, ...) UND die aktive Coin/Timeframe-Strategie-Config (vom Optimizer
-# gefundene Parameter: min_confidence, model_max_depth, Anti-Martingale-Werte) und mischt sie zu
-# einem einzigen barrier_strategy_settings-Dict. Analog zu dnabot/zerobots
+# Laedt settings.json (strukturelle Einstellungen: Symbol, Timeframes, Feature-Fenster,
+# Margin-Modus, Live-Trading-Schalter, ...) UND die aktive Coin/Timeframe-Strategie-Config (vom
+# Optimizer gefundene Parameter: Hebel, min_confidence, model_max_depth, Anti-Martingale-Werte)
+# und mischt sie zu einem einzigen barrier_strategy_settings-Dict. Analog zu dnabot/zerobots
 # configs/config_<symbol>_<timeframe>.json-Muster, aber deutlich einfacher (nur EIN Symbol/
 # Timeframe aktiv, kein active_strategies-Array noetig).
 #
 # Bewusste Trennung: NUR die Parameter, die scripts/optimize_barrier_model.py tatsaechlich
 # systematisch sucht, leben in der Config-Datei. Alles andere (Symbol, Kontext-Timeframes,
-# Feature-Fenster, Hebel, Margin-Modus, Live-Trading-Schalter, Startkapital, Gebuehren-Annahme)
-# bleibt in settings.json -- das sind entweder Strategie-Grundentscheidungen oder
-# Methodik-/Betriebsparameter, keine per Backtest optimierbaren Werte (siehe README).
+# Feature-Fenster, Margin-Modus, Live-Trading-Schalter, Startkapital, Gebuehren-Annahme) bleibt
+# in settings.json -- das sind Strategie-Grundentscheidungen oder Methodik-/Betriebsparameter,
+# keine per Backtest optimierbaren Werte (siehe README). Hebel wanderte 2026-07-27 in die
+# Strategie-Config: eine reale Liquidations-Sicherheitsanalyse zeigte, dass der sichere Hebel von
+# `barrier_pct`/Gebuehren abhaengt und daher wie Anti-Martingale systematisch gesucht werden
+# sollte, nicht als fixe Grundentscheidung -- siehe margin_safety.py.
 import json
 import os
 
@@ -20,7 +23,7 @@ CONFIGS_DIR = os.path.join(PROJECT_ROOT, 'src', 'oraclebot', 'strategy', 'config
 # Diese Schluessel werden von der Coin/Timeframe-Config ueberschrieben, falls vorhanden --
 # alles andere kommt ausschliesslich aus settings.json.
 STRATEGY_CONFIG_KEYS = [
-    'min_confidence', 'model_max_depth',
+    'leverage', 'min_confidence', 'model_max_depth',
     'anti_martingale_base_pct', 'anti_martingale_growth_factor', 'anti_martingale_streak_target',
 ]
 

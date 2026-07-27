@@ -117,6 +117,7 @@ oraclebot/
         ├── barrier_gate.py        # 4h-Zeitfenster + Perioden-Marker (Doppel-Versand-Schutz)
         ├── training_history.py    # Protokolliert Trainingslaeufe, warnt bei Parameter-Tuning-Overfitting-Risiko
         ├── config.py              # Laedt + mischt settings.json + Strategie-Config zu einem Dict
+        ├── margin_safety.py       # Sicherheits-Hebel gegen vorzeitige Bitget-Liquidation (siehe "Wichtige Regeln")
         └── telegram.py            # send_message/send_photo/send_document
 
 artifacts/
@@ -249,7 +250,7 @@ Jeder Cronjob-Lauf im 4h-Zeitfenster (00/04/08/12/16/20 UTC, +0-29 Min), wenn li
              ├── Ja → nichts tun
              └── Nein →
                     Echtes Guthaben abrufen (fetch_balance_usdt)
-                    Hebel + Margin-Modus setzen (leverage/margin_mode aus settings.json)
+                    Hebel (Strategie-Config) + Margin-Modus (settings.json) setzen
                     Positionsgroesse = Anti-Martingale ODER risikobasiert, gedeckelt
                         durch verfuegbare Margin (Balance x Hebel, 1% Puffer)
                     Boersen-Minimum + Mindest-Notional (5 USDT) pruefen
@@ -297,14 +298,17 @@ Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 Zwei getrennte Dateien, analog zum dnabot/zerobot-Muster (`configs/config_<symbol>_<timeframe>.json`),
 aber deutlich einfacher (nur EIN Symbol/Timeframe aktiv, kein `active_strategies`-Array):
 
-- **`settings.json`** — strukturelle Einstellungen: Symbol, Timeframes, Feature-Fenster, Hebel,
+- **`settings.json`** — strukturelle Einstellungen: Symbol, Timeframes, Feature-Fenster,
   Margin-Modus, Live-Trading-Schalter, Startkapital, Gebühren-Annahme. Änderst du diese von Hand
   oder lässt sie unverändert, unabhängig vom Optimizer.
-- **`src/oraclebot/strategy/configs/config_<symbol>_<reference_timeframe>.json`** — genau die 5
-  Parameter, die `optimize_barrier_model.py` systematisch sucht (`min_confidence`,
+- **`src/oraclebot/strategy/configs/config_<symbol>_<reference_timeframe>.json`** — genau die 6
+  Parameter, die `optimize_barrier_model.py` systematisch sucht (`leverage`, `min_confidence`,
   `model_max_depth`, die drei `anti_martingale_*`-Werte). Wird von `load_barrier_config()`
   (`src/oraclebot/utils/config.py`) automatisch über `settings.json` gemischt — fehlt die Datei
-  (frisches Setup, noch kein Optimizer-Lauf), greifen sinnvolle Standardwerte.
+  (frisches Setup, noch kein Optimizer-Lauf), greifen sinnvolle Standardwerte. `leverage` wanderte
+  2026-07-27 von `settings.json` hierher (siehe [Wichtige Regeln](#wichtige-regeln--bekannte-einschränkungen)):
+  der sichere Hebel hängt von `barrier_pct`/Gebühren ab und wird deshalb wie Anti-Martingale
+  systematisch gesucht statt fest vorgegeben.
 
 **Coin-/Timeframe-Wechsel:** Der Dateiname kodiert Symbol UND `reference_timeframe`
 (`config_BTC_USDT_USDT_4h.json`, `config_ETH_USDT_USDT_1h.json`, ...). Änderst du `symbol` oder
@@ -322,7 +326,6 @@ Datei.
         "intraday_timeframe": "15m",
         "context_timeframes": ["1M", "1w", "1d", "1h", "15m"],
         "barrier_pct": 1.0,
-        "leverage": 100,
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": false,
@@ -345,11 +348,12 @@ Datei.
 ```json
 // src/oraclebot/strategy/configs/config_BTC_USDT_USDT_4h.json
 {
-    "min_confidence": 0.60,
-    "model_max_depth": 3,
-    "anti_martingale_base_pct": 4.03,
-    "anti_martingale_growth_factor": 2.0,
-    "anti_martingale_streak_target": 3,
+    "leverage": 40,
+    "min_confidence": 0.50,
+    "model_max_depth": 2,
+    "anti_martingale_base_pct": 14.68,
+    "anti_martingale_growth_factor": 1.5,
+    "anti_martingale_streak_target": 2,
     "_meta": { "optimized_at": "...", "walk_forward_mean": 0.736, "...": "..." }
 }
 ```
@@ -358,10 +362,11 @@ Datei.
 |---|---|---|
 | `reference_timeframe` / `intraday_timeframe` | settings.json | 4h für Signal-Entscheidungen, 15m für die Barriere-Reihenfolgen-Bestimmung. |
 | `context_timeframes` | settings.json | Zusätzliche Zeitebenen, deren letzte abgeschlossene Kerze als weiterer Feature-Block angehängt wird (siehe [Barriere-Zielvariable](#2-barriere-zielvariable-barrier_targetspy)). Leer = nur 4h-Features (altes Verhalten). |
-| `barrier_pct` | settings.json | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. Bewusst NICHT Teil der Optimizer-Suche (siehe [Parameter automatisch optimieren](#1b-parameter-automatisch-optimieren-optional)). |
+| `barrier_pct` | settings.json | Symmetrischer SL/TP-Abstand in % vom Entry. Validiert bei 1.0. Bewusst NICHT Teil der Optimizer-Suche (siehe [Parameter automatisch optimieren](#1b-parameter-automatisch-optimieren-optional)) — bestimmt aber die Sicherheitsgrenze, gegen die `leverage` gefiltert wird. |
+| `leverage` | **Strategie-Config** | Von `optimize_barrier_model.py` gemeinsam mit Anti-Martingale gesucht, gedeckelt durch eine aus Bitgets Liquidationsformel abgeleitete Sicherheitsgrenze (siehe [Wichtige Regeln](#wichtige-regeln--bekannte-einschränkungen)). Kein Nutzer-Fixwert mehr. |
 | `model_max_depth` | **Strategie-Config** | HistGBM-Baumtiefe. Von `optimize_barrier_model.py` per Walk-Forward + Ein-Standardfehler-Regel gewählt (siehe unten) — manuell zuletzt bei 3 validiert. |
 | `min_confidence` | **Strategie-Config** | Von `optimize_barrier_model.py` per Sensitivitäts-Sweep gewählt (niedrigste Schwelle, die eine 70%-Winrate-Sicherheitsmarge über der Gebühren-Breakeven-Grenze hält). Höher = weniger, aber treffsicherere Trades. |
-| `anti_martingale_*` | **Strategie-Config** | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). Von `optimize_barrier_model.py` per gebühren-bewusster Bootstrap-Kalibrierung gewählt (Ziel: 90.-Perzentil-MaxDD unter einer interaktiv vorgegebenen Grenze) — Gebühren sind bei 100x Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade). |
+| `anti_martingale_*` | **Strategie-Config** | Siehe [Positionsgröße](#5-positionsgröße-zwei-optionen). Von `optimize_barrier_model.py` gemeinsam mit `leverage` per gebühren-bewusster Bootstrap-Kalibrierung gewählt (Ziel: 90.-Perzentil-MaxDD unter einer interaktiv vorgegebenen Grenze) — Gebühren sind bei hohem Hebel keine Kleinigkeit (~12% der Brutto-PnL pro Trade bei 100x). |
 | `history_days` | settings.json | Wie viel Historie beim Training geladen wird (1000 = ~Bitgets 1h/15m-Datentiefen-Grenze). |
 | `backtest_start_capital` | settings.json | Startkapital fürs `show_results.py`-Backtest (Anti-Martingale-Kapitalkurve/Chart/Excel-Export). Hat keinen Einfluss auf Live-Trading — dort zählt das echte Bitget-Guthaben. |
 | `taker_fee_rate_pct` | settings.json | Bitget-Taker-Gebühr pro Seite (Standard-Tier ohne VIP-Rabatt), fließt in `show_results.py`'s Backtest UND in die Anti-Martingale-Kalibrierung ein — bei 100x Hebel ~12% der Brutto-PnL pro Trade, keine Kleinigkeit (siehe [Einschränkungen](#wichtige-regeln--bekannte-einschränkungen)). |
@@ -467,16 +472,29 @@ Zeigt am Ende automatisch die Zusammenfassung (wie `show_results.sh` Modus 1).
 ./optimize.sh
 ```
 
-Sucht systematisch `model_max_depth`, `min_confidence` und die drei `anti_martingale_*`-Werte —
-dieselbe Methodik, mit der diese Werte ursprünglich manuell erforscht wurden (Walk-Forward-
-Vergleich, Sensitivitäts-Sweep, gebühren-bewusste Bootstrap-Kalibrierung), jetzt als
-wiederholbares Skript. Fragt zu Beginn interaktiv `reference_timeframe`, Hebel, Startkapital,
-Ziel-MaxDD und `history_days` ab (Standard jeweils aus `settings.json`).
+Sucht systematisch `leverage`, `model_max_depth`, `min_confidence` und die drei
+`anti_martingale_*`-Werte — dieselbe Methodik, mit der diese Werte ursprünglich manuell erforscht
+wurden (Walk-Forward-Vergleich, Sensitivitäts-Sweep, gebühren-bewusste Bootstrap-Kalibrierung),
+jetzt als wiederholbares Skript. Fragt zu Beginn interaktiv `reference_timeframe`, Startkapital,
+Ziel-MaxDD und `history_days` ab (Standard jeweils aus `settings.json`) — der Hebel wird NICHT
+mehr interaktiv vorgegeben, sondern in Schritt 3 zusammen mit Anti-Martingale gesucht (siehe
+unten).
 
-**Bewusst NICHT Teil der Suche:** `leverage`, `margin_mode`, `live_trading_enabled`,
-`history_days`, `val_split`, `backtest_start_capital`, `taker_fee_rate_pct`, `num_threads`,
-Feature-Fenster — entweder Strategie-Grundentscheidungen, Methodik-/Betriebsparameter, oder ein
-zu großer Suchraum für die aktuelle Datenmenge (Overfitting-Risiko).
+**Bewusst NICHT Teil der Suche:** `margin_mode`, `live_trading_enabled`, `history_days`,
+`val_split`, `backtest_start_capital`, `taker_fee_rate_pct`, `num_threads`, Feature-Fenster —
+entweder Strategie-Grundentscheidungen, Methodik-/Betriebsparameter, oder ein zu großer
+Suchraum für die aktuelle Datenmenge (Overfitting-Risiko).
+
+**Hebel-Suche mit harter Sicherheitsgrenze:** `leverage` wurde bis 2026-07-27 fest in
+`settings.json` konfiguriert — ein reales Live-Trade-Log zeigte dann eine Bitget-Zwangsliquidation
+statt eines normalen SL-Treffers bei ~1% Abstand (Bitgets Liquidationsschwelle liegt bei sehr
+hohem Hebel rechnerisch näher am Entry als die konfigurierte SL-Distanz). Seitdem sucht Schritt 3
+`leverage` gemeinsam mit Anti-Martingale (`LEVERAGE_CANDIDATES` in `optimize_barrier_model.py`),
+gefiltert durch `margin_safety.compute_max_safe_leverage()` (aus Bitgets offizieller
+Liquidationspreis-Formel abgeleitet, siehe [Wichtige Regeln](#wichtige-regeln--bekannte-einschränkungen))
+— unsichere Kandidaten werden gar nicht erst getestet. Der gefundene Hebel wird 1:1 in die
+Strategie-Config geschrieben, KEINE versteckte Laufzeit-Anpassung in `live_trade.py`/
+`evaluation.py`: es wird live so gehandelt, wie es optimiert und gebacktestet wurde.
 
 **Strikte OOS-Disziplin:** Alle Parameter werden ausschließlich anhand von Walk-Forward-
 Out-of-Fold-Vorhersagen ausgewählt (`evaluation.walk_forward_predictions`). Der offizielle
@@ -722,6 +740,29 @@ nichts.
 
 ## Wichtige Regeln & bekannte Einschränkungen
 
+- **Hebel wird seit 2026-07-27 vom Optimizer gesucht, nicht mehr fest konfiguriert** (Fund +
+  Kurskorrektur am selben Tag): ein reales Live-Trade-Log zeigte eine "Long liquidation" (Bitgets
+  eigene Zwangsschliessung) statt eines normalen SL-Treffers bei ~1% Abstand. Grund: Bitgets
+  Liquidationspreis haengt von der Maintenance Margin Rate ab (0,40% fuer BTCUSDT-Positionen bis
+  200.000 USDT, [Quelle](https://www.bitgetapp.com/support/articles/12560603834416)) — bei sehr
+  hohem Hebel (z.B. 100x) liegt die rechnerische Liquidationsschwelle NAEHER am Entry als die
+  konfigurierte SL-Distanz, sodass Bitgets Zwangsliquidation das eigene SL ueberholen kann.
+  Erster Ansatz war eine versteckte Laufzeit-Anpassung (Hebel wird intern reduziert, ohne dass
+  der Nutzer es sieht) — vom Nutzer explizit abgelehnt ("wir pfuschen nicht durch die gegend
+  rum. es wird so live getradet wie es optimiert und gebacktestet wurde"). **Endgueltiges
+  Design:** `leverage` ist jetzt Teil der Coin/Timeframe-Strategie-Config (wie
+  `min_confidence`/Anti-Martingale) und wird von `optimize_barrier_model.py` in Schritt 3
+  gemeinsam mit Anti-Martingale gesucht (Kandidatenliste `LEVERAGE_CANDIDATES`). Die aus Bitgets
+  offizieller [Liquidationspreis-Formel](https://www.bitget.com/support/articles/12560603808759)
+  abgeleitete Sicherheitsgrenze (`margin_safety.compute_max_safe_leverage()`, inkl. 30%
+  Sicherheitspuffer) dient dabei NUR als harter Kandidaten-Filter -- unsichere Hebel-Werte werden
+  gar nicht erst getestet, aber der am Ende gefundene Wert wird 1:1 (ohne jede weitere
+  Laufzeit-Anpassung) in die Strategie-Config geschrieben und von `live_trade.py`/`evaluation.py`
+  exakt so uebernommen. Bei den Standardwerten (`barrier_pct=1.0`, `taker_fee_rate_pct=0.06`)
+  liegt die Sicherheitsgrenze bei ~48x -- ein realer Optimizer-Lauf waehlte 40x (hoechster sicherer
+  Kandidat) mit deutlich reduziertem MaxDD (33,0% statt zuvor 44,1% bei fixem 100x). **Nach diesem
+  Fix `./optimize.sh` erneut laufen lassen** — die aktuelle Live-Config wurde noch unter der alten,
+  festen 100x-Annahme kalibriert.
 - `secret.json` ist **nicht in Git** — wird von `update.sh` gesichert/wiederhergestellt.
 - `artifacts/datasets/barrier_model_BTC_USDT_USDT_4h.pkl` ist **bewusst git-getrackt** —
   einzige Voraussetzung für Inferenz auf einem schwächeren Rechner.

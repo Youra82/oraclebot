@@ -1,7 +1,7 @@
 # scripts/optimize_barrier_model.py
 # Systematische Parametersuche fuer das Barriere-Modell: model_max_depth, min_confidence,
-# Anti-Martingale (base_pct/growth_factor/streak_target) -- dieselbe Methodik, mit der diese
-# Werte urspruenglich in der Recherche vom 2026-07-24 bis 2026-07-26 gefunden wurden
+# Hebel + Anti-Martingale (base_pct/growth_factor/streak_target) -- dieselbe Methodik, mit der
+# diese Werte urspruenglich in der Recherche vom 2026-07-24 bis 2026-07-26 gefunden wurden
 # (Walk-Forward-Vergleich, Sensitivitaets-Sweep, gebuehren-bewusste Bootstrap-Kalibrierung),
 # jetzt als wiederholbares, git-getracktes Skript statt Ad-hoc-Scratch-Code.
 #
@@ -12,13 +12,23 @@
 # mehr beeinflusst. Andernfalls waere der OOS-Split nicht mehr wirklich "ungesehen"
 # (Mensch-im-Loop-Overfitting, siehe training_history.py und README).
 #
-# Bewusst NICHT Teil der Suche (siehe README "Wichtige Regeln"): leverage, margin_mode,
+# HEBEL WIRD SEIT 2026-07-27 MITGESUCHT (Nutzer-Entscheidung, nachdem eine reale Liquidations-
+# Sicherheitsanalyse zeigte, dass ein zu hoher Hebel Bitgets eigene Zwangsliquidation VOR dem
+# eigenen SL ausloesen kann): margin_safety.compute_max_safe_leverage() liefert dafuer NUR eine
+# harte Kandidaten-Obergrenze (unsichere Hebel-Werte werden gar nicht erst getestet) -- die
+# eigentliche Auswahl unter den sicheren Kandidaten laeuft ganz normal ueber dieselbe
+# Walk-Forward-Bootstrap-Kalibrierung wie Anti-Martingale. Bewusst KEINE versteckte
+# Laufzeit-Anpassung: der hier gefundene Hebel wird 1:1 in die Strategie-Config geschrieben und
+# von live_trade.py/evaluation.py exakt so uebernommen ("es wird live so gehandelt, wie es
+# optimiert und gebacktestet wurde").
+#
+# Bewusst NICHT Teil der Suche (siehe README "Wichtige Regeln"): margin_mode,
 # live_trading_enabled, history_days, val_split, backtest_start_capital, taker_fee_rate_pct,
 # num_threads, Feature-Fenster (feature_settings/feature_settings_by_timeframe) -- entweder
 # Strategie-Grundentscheidungen, Methodik-/Betriebsparameter, oder ein zu grosser Suchraum fuer
-# die aktuelle Datenmenge (Overfitting-Risiko). leverage/backtest_start_capital/
-# reference_timeframe sind trotzdem als Lauf-Parameter ueberschreibbar (siehe optimize.sh),
-# weil sie die Anti-Martingale-Kalibrierung/den Datensatz beeinflussen, ohne selbst gesucht zu werden.
+# die aktuelle Datenmenge (Overfitting-Risiko). backtest_start_capital/reference_timeframe sind
+# trotzdem als Lauf-Parameter ueberschreibbar (siehe optimize.sh), weil sie die
+# Anti-Martingale-Kalibrierung/den Datensatz beeinflussen, ohne selbst gesucht zu werden.
 import argparse
 import json
 import logging
@@ -42,6 +52,7 @@ from oraclebot.data.scaler import FeatureScaler
 from oraclebot.model.barrier_model import BarrierPredictor
 from oraclebot.utils.config import load_barrier_config, load_settings, save_strategy_config
 from oraclebot.utils.data_fetch import fetch_all_timeframes
+from oraclebot.utils.margin_safety import compute_max_safe_leverage
 from oraclebot.utils import training_history
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..')
@@ -54,6 +65,9 @@ MIN_CONFIDENCE_CANDIDATES = [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
 MIN_CONFIDENCE_WINRATE_FLOOR = 0.70
 STREAK_TARGET_CANDIDATES = [2, 3, 4, 5]
 GROWTH_FACTOR_CANDIDATES = [1.5, 2.0, 3.0]
+# Typische Hebel-Stufen -- wird pro Lauf zusaetzlich durch compute_max_safe_leverage() (siehe
+# margin_safety.py) auf sichere Werte gefiltert, bevor irgendetwas davon getestet wird.
+LEVERAGE_CANDIDATES = [10, 15, 20, 25, 30, 40, 45, 50, 75, 100, 125]
 
 
 def select_best_max_depth(examples: list, n_folds: int = 8) -> dict:
@@ -115,30 +129,55 @@ def select_min_confidence(wf_preds: list, barrier_cfg: dict) -> dict:
     return best
 
 
-def select_anti_martingale(wf_preds: list, barrier_cfg: dict, min_confidence: float, dd_limit: float,
-                            dd_percentile: float = 90.0) -> dict:
+def select_leverage_and_anti_martingale(wf_preds: list, barrier_cfg: dict, min_confidence: float,
+                                         dd_limit: float, barrier_pct: float, taker_fee_pct: float,
+                                         dd_percentile: float = 90.0) -> dict:
+    """Sucht Hebel + Anti-Martingale-Parameter GEMEINSAM (Hebel beeinflusst direkt, wie stark
+    Gewinn/Verlust pro Trade ausfaellt, also untrennbar von der Anti-Martingale-Kalibrierung).
+
+    Sicherheitsgrenze zuerst: compute_max_safe_leverage() (siehe margin_safety.py) filtert
+    LEVERAGE_CANDIDATES auf Werte, bei denen Bitgets eigene Liquidation (Maintenance-Margin-Rate)
+    garantiert erst NACH der konfigurierten SL-Distanz (barrier_pct) ausgeloest wird -- unsichere
+    Kandidaten werden gar nicht erst getestet. Unter den sicheren Kandidaten entscheidet
+    ausschliesslich die Walk-Forward-Bootstrap-Kalibrierung (wie zuvor bei Anti-Martingale
+    allein)."""
     logger.info('')
     logger.info('=' * 70)
-    logger.info(f'3) ANTI-MARTINGALE (Bootstrap-Kalibrierung auf Walk-Forward-Trades, '
+    logger.info(f'3) HEBEL + ANTI-MARTINGALE (Bootstrap-Kalibrierung auf Walk-Forward-Trades, '
                 f'Ziel: {dd_percentile:.0f}.-Perzentil-MaxDD <= {dd_limit:.0f}%)')
     logger.info('=' * 70)
     trades = build_trades(wf_preds, barrier_cfg, min_confidence=min_confidence)
     win_rate = sum(1 for t in trades if t['outcome'] == 'win') / len(trades)
     logger.info(f"  Grundlage: {len(trades)} Walk-Forward-Trades (WinRate={win_rate:.1%})")
 
+    max_safe_leverage = compute_max_safe_leverage(barrier_pct, taker_fee_pct)
+    safe_candidates = [lev for lev in LEVERAGE_CANDIDATES if lev <= max_safe_leverage]
+    excluded = [lev for lev in LEVERAGE_CANDIDATES if lev > max_safe_leverage]
+    logger.info(f"  Sichere Hebel-Obergrenze (Liquidation erst nach {barrier_pct:.1f}% SL-Distanz): "
+                f"{max_safe_leverage:.1f}x -- geprueft werden {safe_candidates}"
+                + (f" (ausgeschlossen als unsicher: {excluded})" if excluded else ""))
+    if not safe_candidates:
+        # Selbst der kleinste Kandidat waere unsicher -- lieber den kleinsten Kandidaten mit
+        # deutlicher Warnung nehmen als komplett ohne Ergebnis abzubrechen.
+        safe_candidates = [min(LEVERAGE_CANDIDATES)]
+        logger.warning(f"  KEIN Hebel-Kandidat erreicht die Sicherheitsgrenze -- nehme den "
+                       f"kleinsten ({safe_candidates[0]}x) trotzdem, mit reduzierter Sicherheitsmarge.")
+
     results = []
-    for streak_target in STREAK_TARGET_CANDIDATES:
-        for growth_factor in GROWTH_FACTOR_CANDIDATES:
-            # Jede Kombination lost tausende Bootstrap-Trade-Sequenzen (22 Bisektionsschritte +
-            # finale Praezisionsrunde) -- ohne diese Zeile bleibt die Konsole minutenlang leer.
-            logger.info(f"  Rechne streak={streak_target} growth={growth_factor:.1f}...")
-            calib = calibrate_anti_martingale_base_pct(
-                trades, barrier_cfg, growth_factor, streak_target,
-                dd_percentile=dd_percentile, dd_limit=dd_limit)
-            results.append({'streak_target': streak_target, 'growth_factor': growth_factor, **calib})
-            logger.info(f"  streak={streak_target} growth={growth_factor:.1f}: base_pct={calib['base_pct']:.3f}% "
-                        f"P50-DD={calib['p50_dd']:.1f}% P{dd_percentile:.0f}-DD={calib['p_dd']:.1f}% "
-                        f"MedSkips={calib['median_skips']:.1f}")
+    for leverage in safe_candidates:
+        for streak_target in STREAK_TARGET_CANDIDATES:
+            for growth_factor in GROWTH_FACTOR_CANDIDATES:
+                # Jede Kombination lost tausende Bootstrap-Trade-Sequenzen (22 Bisektionsschritte +
+                # finale Praezisionsrunde) -- ohne diese Zeile bleibt die Konsole minutenlang leer.
+                logger.info(f"  Rechne Hebel={leverage}x streak={streak_target} growth={growth_factor:.1f}...")
+                calib = calibrate_anti_martingale_base_pct(
+                    trades, barrier_cfg, growth_factor, streak_target,
+                    dd_percentile=dd_percentile, dd_limit=dd_limit, leverage=leverage)
+                results.append({'leverage': leverage, 'streak_target': streak_target,
+                                'growth_factor': growth_factor, **calib})
+                logger.info(f"  Hebel={leverage}x streak={streak_target} growth={growth_factor:.1f}: "
+                            f"base_pct={calib['base_pct']:.3f}% P50-DD={calib['p50_dd']:.1f}% "
+                            f"P{dd_percentile:.0f}-DD={calib['p_dd']:.1f}% MedSkips={calib['median_skips']:.1f}")
 
     # MedSkips>0 heisst: bei diesem Startkapital/Hebel faellt der Einsatz oft unter Bitgets
     # Mindest-Notional -- degenerierte Kandidaten (siehe README, 2026-07-25-Fund) ausschliessen.
@@ -147,8 +186,8 @@ def select_anti_martingale(wf_preds: list, barrier_cfg: dict, min_confidence: fl
         logger.warning("  Keine Kombination ohne uebersprungene Trades (Mindest-Notional) -- nehme alle.")
         viable = results
     best = max(viable, key=lambda r: r['p50_pnl'])
-    logger.info(f"-> Gewaehlt: streak_target={best['streak_target']} growth_factor={best['growth_factor']:.1f} "
-                f"base_pct={best['base_pct']:.3f}%")
+    logger.info(f"-> Gewaehlt: Hebel={best['leverage']}x streak_target={best['streak_target']} "
+                f"growth_factor={best['growth_factor']:.1f} base_pct={best['base_pct']:.3f}%")
     return best
 
 
@@ -157,9 +196,8 @@ if __name__ == '__main__':
     parser.add_argument('--symbol', default=None)
     parser.add_argument('--reference-timeframe', default=None)
     parser.add_argument('--history-days', type=int, default=None)
-    parser.add_argument('--leverage', type=float, default=None,
-                         help='Ueberschreibt barrier_strategy_settings.leverage fuer diesen Optimierungslauf '
-                              '(fliesst in die Anti-Martingale-Kalibrierung ein).')
+    # Kein --leverage-Override mehr (siehe Datei-Kommentar oben): der Hebel wird seit 2026-07-27
+    # selbst gesucht, nicht mehr als fixer Lauf-Parameter vorgegeben.
     parser.add_argument('--start-capital', type=float, default=None,
                          help='Ueberschreibt backtest_start_capital fuer diesen Optimierungslauf.')
     parser.add_argument('--dd-limit', type=float, default=50.0,
@@ -171,8 +209,6 @@ if __name__ == '__main__':
 
     settings = load_settings()
     barrier_cfg = load_barrier_config(settings, symbol=args.symbol, reference_timeframe=args.reference_timeframe)
-    if args.leverage is not None:
-        barrier_cfg['leverage'] = args.leverage
     if args.start_capital is not None:
         barrier_cfg['backtest_start_capital'] = args.start_capital
 
@@ -183,12 +219,13 @@ if __name__ == '__main__':
     barrier_pct = barrier_cfg.get('barrier_pct', 1.0)
     history_days = args.history_days or barrier_cfg['history_days']
 
+    taker_fee_pct = barrier_cfg.get('taker_fee_rate_pct', 0.06)
     logger.info("=" * 70)
     logger.info("ORACLEBOT PARAMETER-OPTIMIERUNG")
     logger.info("=" * 70)
-    logger.info(f"Symbol={symbol} Referenz={reference_tf} Hebel={barrier_cfg['leverage']}x "
+    logger.info(f"Symbol={symbol} Referenz={reference_tf} "
                 f"Startkapital={barrier_cfg.get('backtest_start_capital', 15.0):.2f} USDT "
-                f"DD-Ziel={args.dd_limit:.0f}%")
+                f"DD-Ziel={args.dd_limit:.0f}% (Hebel wird mitgesucht, siehe Schritt 3)")
     logger.info("")
 
     all_tfs = sorted(set([reference_tf, intraday_tf] + context_tfs))
@@ -213,13 +250,16 @@ if __name__ == '__main__':
     best_confidence = select_min_confidence(wf_preds, barrier_cfg)
     min_confidence = best_confidence['min_confidence']
 
-    # --- 3) Anti-Martingale ---
-    best_am = select_anti_martingale(wf_preds, barrier_cfg, min_confidence, dd_limit=args.dd_limit)
+    # --- 3) Hebel + Anti-Martingale ---
+    best_am = select_leverage_and_anti_martingale(wf_preds, barrier_cfg, min_confidence, dd_limit=args.dd_limit,
+                                                   barrier_pct=barrier_pct, taker_fee_pct=taker_fee_pct)
+    leverage = best_am['leverage']
 
     logger.info('')
     logger.info('=' * 70)
     logger.info('GEFUNDENE PARAMETER (nur per Walk-Forward, OOS-Split unberuehrt)')
     logger.info('=' * 70)
+    logger.info(f"leverage = {leverage}")
     logger.info(f"model_max_depth = {max_depth}")
     logger.info(f"min_confidence = {min_confidence:.2f}")
     logger.info(f"anti_martingale_growth_factor = {best_am['growth_factor']:.1f}")
@@ -255,6 +295,7 @@ if __name__ == '__main__':
     val_preds.sort(key=lambda p: p['date'])
 
     final_cfg = dict(barrier_cfg)
+    final_cfg['leverage'] = leverage
     final_cfg['min_confidence'] = min_confidence
     final_cfg['anti_martingale_base_pct'] = best_am['base_pct']
     final_cfg['anti_martingale_growth_factor'] = best_am['growth_factor']
@@ -327,13 +368,14 @@ if __name__ == '__main__':
 
         meta = {
             'optimized_at': pd.Timestamp.now(tz='UTC').isoformat(),
-            'leverage_used': barrier_cfg['leverage'],
             'start_capital_used': barrier_cfg.get('backtest_start_capital', 15.0),
             'dd_limit_used': args.dd_limit,
             'walk_forward_mean': best_depth['mean'], 'walk_forward_worst_case': best_depth['worst_case'],
             'confirmation_oos_accuracy': val_acc,
+            'max_safe_leverage_at_selection': compute_max_safe_leverage(barrier_pct, taker_fee_pct),
         }
         values = {
+            'leverage': leverage,
             'min_confidence': min_confidence, 'model_max_depth': max_depth,
             'anti_martingale_base_pct': best_am['base_pct'],
             'anti_martingale_growth_factor': best_am['growth_factor'],

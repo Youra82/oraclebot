@@ -42,7 +42,12 @@ def execute_live_trade(exchange, signal: dict, symbol: str, strat_cfg: dict, tel
     Returns:
         dict mit 'action' ('skipped' | 'entered' | 'failed') + Details.
     """
-    leverage = strat_cfg.get('leverage', 5)
+    # leverage lebt seit dem Liquidations-Sicherheits-Fund (2026-07-27) in der Coin/Timeframe-
+    # Strategie-Config (von optimize_barrier_model.py gesucht, siehe margin_safety.py fuer die
+    # Sicherheitsgrenze, die dort NUR als Kandidaten-Filter dient) -- hier wird der Wert exakt so
+    # verwendet, wie er konfiguriert/optimiert wurde, KEINE versteckte Laufzeit-Anpassung. Es wird
+    # live so gehandelt, wie es optimiert und gebacktestet wurde.
+    leverage = strat_cfg.get('leverage', 10.0)
     margin_mode = strat_cfg.get('margin_mode', 'isolated')
     risk_per_trade_pct = strat_cfg.get('risk_per_trade_pct', 1.0)
     anti_martingale_enabled = strat_cfg.get('anti_martingale_enabled', False)

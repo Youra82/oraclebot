@@ -34,7 +34,7 @@ def test_save_then_load_strategy_config_roundtrip(isolated_configs_dir):
 
 def test_save_strategy_config_rejects_unexpected_keys(isolated_configs_dir):
     with pytest.raises(ValueError):
-        save_strategy_config('ETH/USDT:USDT', '1h', {'leverage': 50}, meta={})
+        save_strategy_config('ETH/USDT:USDT', '1h', {'risk_per_trade_pct': 2.0}, meta={})
 
 
 def test_save_strategy_config_writes_meta_block(isolated_configs_dir):

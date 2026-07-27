@@ -107,22 +107,27 @@ def build_trades(preds: list, barrier_cfg: dict, min_confidence: float = None) -
 
 
 def run_anti_martingale_backtest(trades: list, barrier_cfg: dict, base_pct: float = None,
-                                  growth_factor: float = None, streak_target: int = None) -> dict:
+                                  growth_factor: float = None, streak_target: int = None,
+                                  leverage: float = None) -> dict:
     """Simuliert die Anti-Martingale-Positionsgroesse (echte Module aus anti_martingale.py) MIT
     Taker-Gebuehren (settings.json: taker_fee_rate_pct, Entry+Exit = 2 Taker-Fills) -- ohne
-    Gebuehren wirkt jede Kalibrierung bei 100x Hebel deutlich zu optimistisch (siehe README,
+    Gebuehren wirkt jede Kalibrierung bei hohem Hebel deutlich zu optimistisch (siehe README,
     Rekalibrierung 2026-07-26). Schreibt margin_used/pnl_usdt/equity_after direkt in die
-    trades-Dicts (fuer den Excel-Export weiterverwendbar). base_pct/growth_factor/streak_target
-    optional ueberschreibbar (fuer Parameter-Sweeps in optimize_barrier_model.py, ohne
-    barrier_cfg zu mutieren)."""
-    leverage = barrier_cfg['leverage']
+    trades-Dicts (fuer den Excel-Export weiterverwendbar). base_pct/growth_factor/streak_target/
+    leverage optional ueberschreibbar (fuer Parameter-Sweeps in optimize_barrier_model.py, ohne
+    barrier_cfg zu mutieren) -- der hier genutzte Hebel ist immer EXAKT der konfigurierte/
+    gefundene Wert, keine versteckte Laufzeit-Anpassung (siehe margin_safety.py: die
+    Liquidations-Sicherheitsgrenze ist dort NUR ein Kandidaten-Filter fuer den Optimizer, nicht
+    eine Laufzeit-Korrektur -- Backtest und Live-Trading muessen exakt denselben Hebel nutzen,
+    den optimize_barrier_model.py gefunden und in die Strategie-Config geschrieben hat)."""
     barrier_pct = barrier_cfg['barrier_pct']
     start_capital = barrier_cfg.get('backtest_start_capital', 15.0)
-    fee_rate = barrier_cfg.get('taker_fee_rate_pct', 0.06) / 100.0
-    # .get()-Fallbacks aus demselben Grund wie in build_trades() -- diese drei leben seit dem
-    # Coin/Timeframe-Config-Umbau in der optionalen Strategie-Config-Datei. Fallback-Werte
-    # bewusst identisch zu live_trade.py's execute_live_trade(), damit "kein Config-Datei
-    # vorhanden" ueberall dieselben Standardwerte ergibt.
+    fee_pct = barrier_cfg.get('taker_fee_rate_pct', 0.06)
+    fee_rate = fee_pct / 100.0
+    # .get()-Fallbacks: leverage lebt seit dem Liquidations-Sicherheits-Fund (2026-07-27) ebenso
+    # wie min_confidence/model_max_depth/Anti-Martingale in der optionalen Strategie-Config-Datei.
+    # Fallback-Wert bewusst identisch zu live_trade.py's execute_live_trade().
+    leverage = leverage if leverage is not None else barrier_cfg.get('leverage', 10.0)
     am_base = base_pct if base_pct is not None else barrier_cfg.get('anti_martingale_base_pct', 5.0)
     am_growth = growth_factor if growth_factor is not None else barrier_cfg.get('anti_martingale_growth_factor', 2.0)
     am_streak_target = int(streak_target if streak_target is not None
@@ -160,16 +165,19 @@ def run_anti_martingale_backtest(trades: list, barrier_cfg: dict, base_pct: floa
 
 def bootstrap_max_dd_percentile(trades: list, barrier_cfg: dict, base_pct: float, growth_factor: float,
                                  streak_target: int, percentile: float = 90, n_boot: int = 3000,
-                                 min_notional_usdt: float = 5.0, seed: int = 42) -> dict:
+                                 min_notional_usdt: float = 5.0, seed: int = 42,
+                                 leverage: float = None) -> dict:
     """Bootstrap-robuste MaxDD-Schaetzung (siehe README: Anti-Martingale-Drawdown haengt stark
     von der ZUFAELLIGEN Trade-Reihenfolge ab -- ein einzelner historischer Pfad kann zufaellig
     guenstig oder unguenstig geordnet sein). Zieht `n_boot` Trade-Sequenzen MIT Zuruecklegen aus
     den beobachteten Trade-Ergebnissen, berechnet je Sequenz MaxDD/PnL/uebersprungene Trades
     (Notional < min_notional_usdt, wie live_trade.py's Mindest-Notional-Pruefung), gibt die
-    Perzentile ueber alle Sequenzen zurueck."""
-    leverage = barrier_cfg['leverage']
+    Perzentile ueber alle Sequenzen zurueck. `leverage` optional ueberschreibbar (fuer den
+    Hebel-Sweep in optimize_barrier_model.py, siehe run_anti_martingale_backtest())."""
+    fee_pct = barrier_cfg.get('taker_fee_rate_pct', 0.06)
+    fee_rate = fee_pct / 100.0
+    leverage = leverage if leverage is not None else barrier_cfg.get('leverage', 10.0)
     start_capital = barrier_cfg.get('backtest_start_capital', 15.0)
-    fee_rate = barrier_cfg.get('taker_fee_rate_pct', 0.06) / 100.0
     fracs = np.array([t['frac'] for t in trades])
     n = len(fracs)
     rng = np.random.default_rng(seed)
@@ -222,18 +230,19 @@ def bootstrap_max_dd_percentile(trades: list, barrier_cfg: dict, base_pct: float
 
 def calibrate_anti_martingale_base_pct(trades: list, barrier_cfg: dict, growth_factor: float, streak_target: int,
                                         dd_percentile: float, dd_limit: float, n_boot_search: int = 600,
-                                        n_boot_final: int = 3000) -> dict:
+                                        n_boot_final: int = 3000, leverage: float = None) -> dict:
     """Bisektion: findet den groessten `base_pct`, bei dem das Bootstrap-`dd_percentile`-MaxDD
-    noch <= `dd_limit` bleibt, fuer eine feste (growth_factor, streak_target)-Kombination."""
+    noch <= `dd_limit` bleibt, fuer eine feste (growth_factor, streak_target[, leverage])-Kombination.
+    `leverage` optional ueberschreibbar (fuer den Hebel-Sweep in optimize_barrier_model.py)."""
     lo, hi = 0.05, 15.0
     for _ in range(22):
         mid = (lo + hi) / 2
         result = bootstrap_max_dd_percentile(trades, barrier_cfg, mid, growth_factor, streak_target,
-                                              percentile=dd_percentile, n_boot=n_boot_search)
+                                              percentile=dd_percentile, n_boot=n_boot_search, leverage=leverage)
         if result['p_dd'] <= dd_limit:
             lo = mid
         else:
             hi = mid
     final = bootstrap_max_dd_percentile(trades, barrier_cfg, lo, growth_factor, streak_target,
-                                         percentile=dd_percentile, n_boot=n_boot_final)
+                                         percentile=dd_percentile, n_boot=n_boot_final, leverage=leverage)
     return {'base_pct': lo, **final}

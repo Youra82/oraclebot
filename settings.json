@@ -5,7 +5,6 @@
         "intraday_timeframe": "15m",
         "context_timeframes": ["1M", "1w", "1d", "1h", "15m"],
         "barrier_pct": 1.0,
-        "leverage": 100,
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": true,

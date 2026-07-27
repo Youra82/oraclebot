@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
 
-from scripts.optimize_barrier_model import select_anti_martingale, select_best_max_depth, select_min_confidence
+from scripts.optimize_barrier_model import (
+    select_best_max_depth, select_leverage_and_anti_martingale, select_min_confidence,
+)
 
 
 def make_pred(date, entry, cls, conf, label, exit_hours=4):
@@ -80,7 +82,7 @@ class TestSelectMinConfidence:
         assert best['win_rate'] < 0.70
 
 
-class TestSelectAntiMartingale:
+class TestSelectLeverageAndAntiMartingale:
     def test_excludes_combinations_where_trades_get_skipped_for_min_notional(self, monkeypatch):
         import scripts.optimize_barrier_model as opt
 
@@ -88,7 +90,7 @@ class TestSelectAntiMartingale:
                             label=1 if i % 4 != 0 else 0) for i in range(40)]
 
         def fake_calibrate(trades, barrier_cfg, growth_factor, streak_target, dd_percentile, dd_limit,
-                            n_boot_search=600, n_boot_final=3000):
+                            n_boot_search=600, n_boot_final=3000, leverage=None):
             # Ein einziger degenerierter Kandidat (streak=5, growth=3.0) hat Skips > 0 und muss
             # trotz hoechstem p50_pnl ausgeschlossen werden.
             if streak_target == 5 and growth_factor == 3.0:
@@ -96,6 +98,28 @@ class TestSelectAntiMartingale:
             return {'base_pct': 3.0, 'p50_dd': 20.0, 'p_dd': 30.0, 'p50_pnl': 10.0, 'median_skips': 0.0}
 
         monkeypatch.setattr(opt, 'calibrate_anti_martingale_base_pct', fake_calibrate)
-        best = select_anti_martingale(preds, BASE_CFG, min_confidence=0.60, dd_limit=50.0)
+        best = select_leverage_and_anti_martingale(preds, BASE_CFG, min_confidence=0.60, dd_limit=50.0,
+                                                     barrier_pct=1.0, taker_fee_pct=0.06)
         assert best['median_skips'] == 0
         assert not (best['streak_target'] == 5 and best['growth_factor'] == 3.0)
+
+    def test_only_tests_leverage_candidates_within_the_safety_ceiling(self, monkeypatch):
+        import scripts.optimize_barrier_model as opt
+
+        preds = [make_pred(f'2024-01-{(i % 28) + 1:02d}T00:00:00+00:00', 60000.0, cls=1, conf=0.9,
+                            label=1 if i % 4 != 0 else 0) for i in range(40)]
+        tested_leverages = set()
+
+        def fake_calibrate(trades, barrier_cfg, growth_factor, streak_target, dd_percentile, dd_limit,
+                            n_boot_search=600, n_boot_final=3000, leverage=None):
+            tested_leverages.add(leverage)
+            return {'base_pct': 3.0, 'p50_dd': 20.0, 'p_dd': 30.0, 'p50_pnl': float(leverage), 'median_skips': 0.0}
+
+        monkeypatch.setattr(opt, 'calibrate_anti_martingale_base_pct', fake_calibrate)
+        # barrier_pct=1.0, fee=0.06 -> sichere Obergrenze deutlich unter 100x (siehe test_margin_safety.py).
+        best = select_leverage_and_anti_martingale(preds, BASE_CFG, min_confidence=0.60, dd_limit=50.0,
+                                                     barrier_pct=1.0, taker_fee_pct=0.06)
+        assert max(tested_leverages) < 100
+        assert 100 not in tested_leverages and 125 not in tested_leverages
+        # Bei gleich guten Bootstrap-Ergebnissen (p50_pnl=leverage) gewinnt der hoechste sichere Kandidat.
+        assert best['leverage'] == max(tested_leverages)

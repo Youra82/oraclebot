@@ -160,7 +160,7 @@ def generate_chart(trades: list, barrier_cfg: dict, backtest: dict, safe_symbol:
     price_zoom = price_df[(price_df.index >= plot_start) & (price_df.index <= plot_end)]
 
     title = (f"{symbol} -- {reference_tf}-Barriere-Modell, conf>={barrier_cfg.get('min_confidence', 0.60):.2f} "
-             f"(SL=TP={barrier_cfg['barrier_pct']:.0f}%, Hebel={barrier_cfg['leverage']}x) | "
+             f"(SL=TP={barrier_cfg['barrier_pct']:.0f}%, Hebel={barrier_cfg.get('leverage', 10.0)}x) | "
              f"{len(trades)} Trades | WR: {win_rate:.1f}% | MaxDD: {backtest['max_dd_pct']:.1f}%")
 
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
