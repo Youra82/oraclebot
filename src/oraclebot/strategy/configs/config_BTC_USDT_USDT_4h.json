@@ -1,15 +1,15 @@
 {
-    "leverage": 100,
-    "min_confidence": 0.6,
-    "model_max_depth": 3,
-    "anti_martingale_base_pct": 4.03,
-    "anti_martingale_growth_factor": 2.0,
+    "leverage": 40,
+    "min_confidence": 0.5,
+    "model_max_depth": 2,
+    "anti_martingale_base_pct": 12.20987777709961,
+    "anti_martingale_growth_factor": 1.5,
     "anti_martingale_streak_target": 3,
     "_meta": {
-        "note": "Werte migriert aus settings.json (Stand 2026-07-26) beim Umstieg auf das Coin/Timeframe-Config-Muster -- noch kein optimize_barrier_model.py-Lauf.",
-        "min_confidence_basis": "Sensitivitaets-Sweep (thorough_backtest_analysis.py, 2026-07-26): monoton steigende Winrate mit steigender Schwelle, 0.60 als Kompromiss Trades/Winrate gewaehlt.",
-        "model_max_depth_basis": "Walk-Forward-Vergleich depth=2..6: nahezu identische Genauigkeit, 3 als Mittelweg.",
-        "anti_martingale_basis": "Fee-bewusste Bootstrap-Kalibrierung (3000 Neuordnungen, P90-MaxDD<=50%), rekalibriert 2026-07-26 nach Multi-Timeframe-Upgrade + Gebuehren-Einrechnung.",
-        "leverage_basis": "Uebernommen aus settings.json (Stand 2026-07-27) beim Umzug des Hebels in die Strategie-Config -- noch KEIN sicherheits-gefilterter Optimizer-Lauf. WICHTIG: naechster ./optimize.sh-Lauf sollte den Hebel neu gegen die Liquidations-Sicherheitsgrenze pruefen (siehe margin_safety.py, Fund 2026-07-27)."
+        "note": "REKONSTRUIERT 2026-07-27 aus dem Terminal-Output eines echten ./optimize.sh-Laufs auf DESKTOP-IT4QUD9 (Commit 008f55f), der nie erfolgreich gepusht wurde und durch ein anschliessendes update.sh (git reset --hard) lokal verloren ging. Die 6 Werte oben sind exakt aus dem push_configs.sh-Log uebernommen -- walk_forward_mean/worst_case/confirmation_oos_accuracy dieses spezifischen Laufs sind NICHT bekannt (im Log nicht angezeigt), daher hier nicht erfunden. Empfehlung: ./optimize.sh zeitnah erneut laufen lassen, um frische Diagnose-Werte zu bekommen -- die Werte hier sind funktional korrekt, aber ohne vollstaendige Herkunfts-Metadaten.",
+        "min_confidence_basis": "Sensitivitaets-Sweep (optimize_barrier_model.py, Walk-Forward-Out-of-Fold): niedrigste Schwelle >= 70%-Winrate-Sicherheitsmarge gewaehlt.",
+        "model_max_depth_basis": "Walk-Forward-Vergleich + Ein-Standardfehler-Regel: depth=2 statistisch nicht von tieferen Baeumen unterscheidbar, daher die flachste (overfitting-aermste) Wahl.",
+        "anti_martingale_basis": "Gebuehren-bewusste Bootstrap-Kalibrierung (P90-MaxDD-Ziel), gemeinsam mit dem Hebel gesucht (siehe leverage_basis).",
+        "leverage_basis": "Von optimize_barrier_model.py als hoechster Kandidat innerhalb der Liquidations-Sicherheitsgrenze gewaehlt (margin_safety.compute_max_safe_leverage(), Fund 2026-07-27) -- KEINE versteckte Laufzeit-Anpassung, dieser Wert wird 1:1 live verwendet."
     }
 }
