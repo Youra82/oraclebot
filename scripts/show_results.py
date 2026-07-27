@@ -273,6 +273,7 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
             'Entry': round(t['entry'], 2),
             'Exit': round(t['exit'], 2),
             'Ergebnis': outcome_label,
+            'Hebel': f"{t['leverage']:.0f}x",
             'Margin (USDT)': round(t['margin_used'], 4),
             'PnL (USDT)': round(t['pnl_usdt'], 4),
             'Gesamtkapital': round(t['equity_after'], 4),
@@ -289,8 +290,8 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
     thin_border = Border(left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
                           top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC'))
     col_widths = {'Nr': 6, 'Datum (Entry)': 18, 'Datum (Exit)': 18, 'Coin': 10, 'Timeframe': 12,
-                  'Richtung': 10, 'Entry': 14, 'Exit': 14, 'Ergebnis': 14, 'Margin (USDT)': 16,
-                  'PnL (USDT)': 14, 'Gesamtkapital': 16}
+                  'Richtung': 10, 'Entry': 14, 'Exit': 14, 'Ergebnis': 14, 'Hebel': 10,
+                  'Margin (USDT)': 16, 'PnL (USDT)': 14, 'Gesamtkapital': 16}
 
     headers = list(rows[0].keys())
     for col, h in enumerate(headers, 1):
@@ -322,9 +323,9 @@ def generate_excel(trades: list, barrier_cfg: dict, since: str = None):
     summary_row = len(rows) + 3
     ws.cell(row=summary_row, column=1, value='Zusammenfassung').font = Font(bold=True, size=11)
     summary_row += 1
-    am_base = barrier_cfg['anti_martingale_base_pct']
-    am_growth = barrier_cfg['anti_martingale_growth_factor']
-    am_streak = barrier_cfg['anti_martingale_streak_target']
+    am_base = barrier_cfg.get('anti_martingale_base_pct', 5.0)
+    am_growth = barrier_cfg.get('anti_martingale_growth_factor', 2.0)
+    am_streak = barrier_cfg.get('anti_martingale_streak_target', 3)
     fee_pct = barrier_cfg.get('taker_fee_rate_pct', 0.06)
     for label, value in [
         ('Trades gesamt', len(rows)),

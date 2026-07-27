@@ -160,6 +160,7 @@ def run_anti_martingale_backtest(trades: list, barrier_cfg: dict, base_pct: floa
         t['margin_used'] = margin
         t['pnl_usdt'] = pnl_usd
         t['equity_after'] = capital
+        t['leverage'] = leverage
     return {'end_capital': capital, 'start_capital': start_capital, 'max_dd_pct': max_dd * 100}
 
 
