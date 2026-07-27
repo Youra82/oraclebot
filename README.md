@@ -645,6 +645,28 @@ PYTHONPATH=src python -m pytest tests/                              # Tests ausf
 ./show_results.sh                                                   # Ergebnisse/Chart/Excel (nur lokal, nicht auf dem VPS)
 ```
 
+#### `update.sh` fragt bei `git fetch`/`git reset --hard` nach Benutzername/Passwort
+
+Passiert, wenn die Remote-URL des lokalen Repos auf HTTPS steht
+(`https://github.com/Youra82/oraclebot.git`) statt auf SSH — anders als bei den anderen Bots im
+Fleet, die bereits über den hinterlegten SSH-Key authentifizieren. Fix (im `oraclebot`-Verzeichnis
+auf dem betroffenen Rechner/VPS):
+
+```bash
+git remote set-url origin git@github.com:Youra82/oraclebot.git
+git fetch origin   # sollte jetzt ohne Passwort funktionieren
+```
+
+Fragt danach immer noch nach Passwort/Passphrase, kurz prüfen, ob der SSH-Key überhaupt aktiv ist:
+
+```bash
+ssh -T git@github.com
+# Erwartete Ausgabe: "Hi Youra82! You've successfully authenticated..."
+```
+
+Kommt stattdessen ein Fehler, ist der SSH-Key auf diesem Rechner nicht im ssh-agent geladen oder
+nicht bei GitHub hinterlegt.
+
 #### Cronjob zeigt `FileNotFoundError` / veraltete Fehlermeldungen nach einem Update
 
 Passiert, wenn der Cronjob noch auf einen alten, inzwischen umbenannten/gelöschten Skriptnamen
