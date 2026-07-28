@@ -17,6 +17,26 @@ def test_save_then_load_roundtrip(tmp_path):
     assert loaded == state
 
 
+def test_load_state_resyncs_stale_stake_pct_when_no_streak_in_progress(tmp_path):
+    # Realer Fund 2026-07-28: nach einem optimize_barrier_model.py-Lauf, der
+    # anti_martingale_base_pct z.B. von 4.03% auf 14.80% anhob, blieb ein bereits
+    # abgeschlossener (consecutive_wins=0) Live-Zustand auf dem alten 4.03%-Einsatz haengen,
+    # da load_state() den vorhandenen Wert bisher nie mit dem aktuellen base_pct abgeglichen hat.
+    path = os.path.join(tmp_path, 'state.json')
+    anti_martingale.save_state(path, {'stake_pct': 4.03, 'consecutive_wins': 0, 'pending_position': None})
+    loaded = anti_martingale.load_state(path, base_pct=14.80)
+    assert loaded['stake_pct'] == 14.80
+
+
+def test_load_state_keeps_compounded_stake_mid_streak(tmp_path):
+    # Waehrend eines laufenden Gewinn-Streaks (consecutive_wins > 0) bleibt das Compounding
+    # bewusst unangetastet -- nur der Reset-Zeitpunkt (Streak-Ende/Verlust) synct auf base_pct.
+    path = os.path.join(tmp_path, 'state.json')
+    anti_martingale.save_state(path, {'stake_pct': 14.5, 'consecutive_wins': 1, 'pending_position': None})
+    loaded = anti_martingale.load_state(path, base_pct=7.25)
+    assert loaded['stake_pct'] == 14.5
+
+
 def test_compute_margin_scales_with_current_balance():
     state = {'stake_pct': 10.0}
     assert anti_martingale.compute_margin(1000.0, state) == 100.0

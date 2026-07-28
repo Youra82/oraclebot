@@ -18,11 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 def load_state(path: str, base_pct: float) -> dict:
-    """Laedt den Anti-Martingale-Zustand von Platte, oder erzeugt einen frischen Start-Zustand."""
+    """Laedt den Anti-Martingale-Zustand von Platte, oder erzeugt einen frischen Start-Zustand.
+
+    Ausserhalb eines laufenden Gewinn-Streaks (consecutive_wins == 0) MUSS stake_pct exakt
+    base_pct entsprechen -- wird beim Laden erzwungen, auch wenn bereits ein (dann zwangslaeufig
+    veralteter) Wert gespeichert ist. Ohne diesen Sync bleibt ein Bot nach einem
+    optimize_barrier_model.py-Lauf, der anti_martingale_base_pct aendert, bis zu streak_target-1
+    weitere Trades lang auf dem ALTEN Basiswert haengen (reales Vorkommnis 2026-07-28: Live-
+    Margin passte zu einem laengst ueberholten, Wochen alten base_pct statt dem frisch
+    optimierten). Waehrend eines laufenden Streaks bleibt das Compounding bewusst unangetastet --
+    resolve_pending_outcome() synct ohnehin bei jedem Verlust oder Streak-Abschluss auf den dann
+    aktuellen base_pct."""
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             state = json.load(f)
-        if not state.get('stake_pct'):
+        if not state.get('stake_pct') or state.get('consecutive_wins', 0) == 0:
             state['stake_pct'] = base_pct
         return state
     return {'stake_pct': base_pct, 'consecutive_wins': 0, 'pending_position': None}
