@@ -1,0 +1,17 @@
+{
+  "leverage": 40,
+  "min_confidence": 0.5,
+  "model_max_depth": 2,
+  "anti_martingale_base_pct": 14.804391610622403,
+  "anti_martingale_growth_factor": 1.5,
+  "anti_martingale_streak_target": 2,
+  "_meta": {
+    "optimized_at": "2026-07-28T05:30:58.337995+00:00",
+    "start_capital_used": 15.0,
+    "dd_limit_used": 50.0,
+    "walk_forward_mean": 0.7254237288135593,
+    "walk_forward_worst_case": 0.6949152542372882,
+    "confirmation_oos_accuracy": 0.7337570621468926,
+    "max_safe_leverage_at_selection": 48.09674316339128
+  }
+}
