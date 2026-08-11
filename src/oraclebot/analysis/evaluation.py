@@ -14,6 +14,11 @@ from oraclebot.strategy.barrier_signal import compute_barrier_signal
 
 logger = logging.getLogger(__name__)
 
+# Fuer die Umrechnung reference_timeframe -> Kerzendauer (siehe build_trades()). Dieselbe
+# Zuordnung wie in barrier_targets.py/data_fetch.py/predict_next_barrier.py -- bewusst dupliziert
+# statt geteilt (Fleet-Konvention).
+TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
+
 
 def evaluate_walk_forward(examples: list, n_folds: int = 8, max_depth: int = 3) -> dict:
     """Robustheits-Check ueber mehrere chronologische Fenster (nicht nur den finalen 70/30-Split)
@@ -84,6 +89,14 @@ def build_trades(preds: list, barrier_cfg: dict, min_confidence: float = None) -
     # vor dem ersten optimize_barrier_model.py-Lauf), soll ein sinnvoller Standard greifen statt
     # eines KeyError, konsistent mit predict_next_barrier.py's eigenem Fallback.
     min_conf = min_confidence if min_confidence is not None else barrier_cfg.get('min_confidence', 0.60)
+    # Bugfix 2026-08-11 (Live-vs-Backtest-Validierung): eine Kandidaten-Kerze p['date'] wird real
+    # erst bei p['date'] + reference_timeframe gehandelt (siehe barrier_targets.py -- 'entry' ist
+    # ihr SCHLUSSkurs, p['date'] nur ihre OEFFNUNG). Die vorherige Sperr-Bedingung verglich stattdessen
+    # die rohe Kerzen-Oeffnung mit der Exit-Zeit der offenen Position und uebersprang dadurch teils
+    # Kerzen, deren tatsaechlicher Ausfuehrungszeitpunkt laengst NACH dem Positions-Exit lag --
+    # der Live-Bot haette sie sehr wohl gehandelt. Live-Abgleich zeigte dadurch andere (spaetere/
+    # falsche) Trades als tatsaechlich live gehandelt.
+    ref_delta = pd.Timedelta(minutes=TIMEFRAME_MINUTES[barrier_cfg.get('reference_timeframe', '4h')])
     trades = []
     idx = 0
     while idx < len(preds):
@@ -101,7 +114,14 @@ def build_trades(preds: list, barrier_cfg: dict, min_confidence: float = None) -
             'exit': exit_price, 'direction': signal['direction'], 'frac': pnl_price / p['entry'],
             'outcome': 'win' if won else 'loss',
         })
-        while idx < len(preds) and preds[idx]['date'] <= p['exit_time'].isoformat():
+        # idx zuerst unbedingt ueber die gerade selbst zum Trade gemachte Kerze hinaus bewegen --
+        # sonst haengt sich die Schleife auf, wenn deren EIGENE exit_time exakt ihrem eigenen
+        # Ausfuehrungszeitpunkt entspricht (date+ref_delta == exit_time): die Vergleichs-Bedingung
+        # unten waere dann fuer preds[idx]==p selbst falsch (strikt '<'), idx wuerde nie
+        # voranschreiten -> Endlosschleife (Bug beim ersten Fix-Versuch 2026-08-11 gefunden, ueber
+        # einen haengenden Testlauf).
+        idx += 1
+        while idx < len(preds) and (pd.Timestamp(preds[idx]['date']) + ref_delta) < p['exit_time']:
             idx += 1
     return trades
 

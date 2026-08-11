@@ -24,8 +24,11 @@ def make_intraday_df(rows, start, freq='15min'):
 def test_up_first_detected():
     ref = make_reference_df([100.0])
     ts = ref.index[0]
+    # 'entry' ist der SCHLUSSkurs der Referenzkerze, real erst ab ts+4h (Kerzenschluss) bekannt/
+    # handelbar -- die Barriere-Suche darf daher erst dort beginnen (Bugfix 2026-08-11, vorher
+    # ts+15min: griff auf 15m-Baeren aus der Bildungsphase der Referenzkerze selbst zu).
     # Erste Kerze bleibt neutral, zweite erreicht +1% (101), dritte erst -1% (99)
-    intraday = make_intraday_df([(99.5, 100.5), (100.5, 101.5), (98.5, 99.5)], start=ts + pd.Timedelta(minutes=15))
+    intraday = make_intraday_df([(99.5, 100.5), (100.5, 101.5), (98.5, 99.5)], start=ts + pd.Timedelta(hours=4))
     labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
     assert len(labels) == 1
     assert labels.loc[ts, 'label'] == 1  # hoch zuerst
@@ -34,7 +37,7 @@ def test_up_first_detected():
 def test_down_first_detected():
     ref = make_reference_df([100.0])
     ts = ref.index[0]
-    intraday = make_intraday_df([(99.5, 100.5), (98.5, 99.5), (100.5, 101.5)], start=ts + pd.Timedelta(minutes=15))
+    intraday = make_intraday_df([(99.5, 100.5), (98.5, 99.5), (100.5, 101.5)], start=ts + pd.Timedelta(hours=4))
     labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
     assert labels.loc[ts, 'label'] == 0  # runter zuerst
 
@@ -44,7 +47,7 @@ def test_both_barriers_in_same_bar_prefers_down_first():
     Kerze liegen, gewinnt SL (hier: runter zuerst)."""
     ref = make_reference_df([100.0])
     ts = ref.index[0]
-    intraday = make_intraday_df([(98.0, 102.0)], start=ts + pd.Timedelta(minutes=15))
+    intraday = make_intraday_df([(98.0, 102.0)], start=ts + pd.Timedelta(hours=4))
     labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
     assert labels.loc[ts, 'label'] == 0
 
@@ -53,16 +56,37 @@ def test_unresolved_barrier_is_dropped():
     ref = make_reference_df([100.0])
     ts = ref.index[0]
     # Bleibt die ganze Zeit innerhalb von +-1%
-    intraday = make_intraday_df([(99.7, 100.3)] * 5, start=ts + pd.Timedelta(minutes=15))
+    intraday = make_intraday_df([(99.7, 100.3)] * 5, start=ts + pd.Timedelta(hours=4))
     labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
     assert len(labels) == 0
+
+
+def test_barrier_search_ignores_bars_before_the_reference_candle_closes():
+    """Regression 2026-08-11: die Barriere-Suche darf NICHT auf 15m-Baeren zugreifen, die noch
+    innerhalb der Bildungsphase der Referenzkerze selbst liegen (vor ts+4h) -- sonst wird der
+    (erst bei Kerzenschluss bekannte) Schlusskurs gegen Kursbewegung geprueft, die chronologisch
+    VOR diesem Schlusskurs liegt. Ein Bar direkt nach Kerzenoeffnung (ts+15min), der die Barriere
+    beruehrt, darf das Ergebnis nicht bestimmen -- erst ein Bar ab dem Kerzenschluss (ts+4h) zaehlt."""
+    ref = make_reference_df([100.0])
+    ts = ref.index[0]
+    # Bar bei ts+15min (noch waehrend der Referenzkerze) verletzt bereits +-1% in beide
+    # Richtungen -- muss ignoriert werden. Erst der Bar ab ts+4h (Kerzenschluss) darf zaehlen,
+    # dort wird zuerst die obere Barriere beruehrt.
+    intraday = make_intraday_df(
+        [(90.0, 110.0)] + [(99.7, 100.3)] * 15 + [(100.5, 101.5)],
+        start=ts + pd.Timedelta(minutes=15))
+    labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
+    assert len(labels) == 1
+    assert labels.loc[ts, 'label'] == 1  # hoch zuerst, aus dem Bar ab Kerzenschluss
+    assert labels.loc[ts, 'exit_time'] >= ts + pd.Timedelta(hours=4)
 
 
 def test_exit_time_is_strictly_after_reference_timestamp():
     ref = make_reference_df([100.0, 100.0])
     ts0 = ref.index[0]
-    intraday = make_intraday_df([(99.0, 101.5)] * 10, start=ts0 + pd.Timedelta(minutes=15))
+    intraday = make_intraday_df([(99.0, 101.5)] * 40, start=ts0 + pd.Timedelta(hours=4))
     labels = compute_barrier_labels(ref, intraday, barrier_pct=1.0)
+    assert len(labels) == 2
     assert (labels['exit_time'] > labels.index).all()
 
 

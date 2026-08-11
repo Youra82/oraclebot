@@ -29,7 +29,7 @@ def make_examples(n=240, seed=0):
 
 
 BASE_CFG = {'barrier_pct': 1.0, 'leverage': 100, 'backtest_start_capital': 15.0,
-            'taker_fee_rate_pct': 0.06, 'min_confidence': 0.60,
+            'taker_fee_rate_pct': 0.06, 'min_confidence': 0.60, 'reference_timeframe': '4h',
             'anti_martingale_base_pct': 5.0, 'anti_martingale_growth_factor': 2.0,
             'anti_martingale_streak_target': 3}
 
@@ -106,17 +106,23 @@ class TestBuildTrades:
         trades = build_trades(preds, cfg_without_min_confidence)  # Default ist 0.60
         assert len(trades) == 1
 
-    def test_predictions_up_to_and_including_the_exit_time_boundary_are_skipped(self):
+    def test_predictions_still_covered_by_the_open_position_are_skipped(self):
+        """Eine Kandidaten-Kerze wird real erst bei ihrem eigenen Kerzenschluss (date+4h)
+        gehandelt (siehe barrier_targets.py: 'entry' ist ihr Schlusskurs). Die 04:00-Kerze
+        (exec=08:00) faellt noch in die laufende erste Position (exit erst um 10:00) und wird
+        uebersprungen; die 08:00-Kerze (exec=12:00) liegt bereits NACH deren Exit und wird
+        gehandelt -- auch wenn ihr eigener Oeffnungszeitpunkt (08:00) noch vor dem Exit (10:00)
+        lag (Bugfix 2026-08-11, vorher wurde faelschlich auf die rohe Kerzenoeffnung statt den
+        Ausfuehrungszeitpunkt geprueft)."""
         preds = [
-            self._pred('2024-01-01T00:00:00+00:00', 60000.0, cls=1, conf=0.9, label=1, exit_hours=8),
-            self._pred('2024-01-01T04:00:00+00:00', 60100.0, cls=1, conf=0.9, label=1),
-            self._pred('2024-01-01T08:00:00+00:00', 60200.0, cls=1, conf=0.9, label=1),  # == exit_time, ebenfalls uebersprungen ('<=')
-            self._pred('2024-01-01T12:00:00+00:00', 60300.0, cls=1, conf=0.9, label=1),  # erst danach neuer Trade
+            self._pred('2024-01-01T00:00:00+00:00', 60000.0, cls=1, conf=0.9, label=1, exit_hours=10),
+            self._pred('2024-01-01T04:00:00+00:00', 60100.0, cls=1, conf=0.9, label=1),  # exec=08:00 < exit(10:00) -> noch offen
+            self._pred('2024-01-01T08:00:00+00:00', 60200.0, cls=1, conf=0.9, label=1),  # exec=12:00 >= exit(10:00) -> neuer Trade
         ]
         trades = build_trades(preds, BASE_CFG)
         assert len(trades) == 2
         assert trades[0]['entry'] == 60000.0
-        assert trades[1]['entry'] == 60300.0
+        assert trades[1]['entry'] == 60200.0
 
 
 class TestRunAntiMartingaleBacktest:

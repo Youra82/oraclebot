@@ -21,23 +21,43 @@ logger = logging.getLogger(__name__)
 
 BARRIER_LABELS = ['down_first', 'up_first']  # 0, 1
 
+# Fuer die Umrechnung reference_timeframe -> Kerzendauer (siehe compute_barrier_labels()).
+# Dieselbe Zuordnung wie in data_fetch.py/predict_next_barrier.py -- bewusst dupliziert statt
+# geteilt (Fleet-Konvention, siehe dortige TIMEFRAME_MINUTES-Vorkommen).
+TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
+
 
 def compute_barrier_labels(reference_df: pd.DataFrame, intraday_df: pd.DataFrame,
-                            barrier_pct: float = 1.0) -> pd.DataFrame:
+                            barrier_pct: float = 1.0, reference_timeframe: str = '4h') -> pd.DataFrame:
     """Fuer jede Kerze in `reference_df`: wird ausgehend vom Schlusskurs zuerst eine Bewegung von
     +barrier_pct% oder -barrier_pct% erreicht (anhand der feineren `intraday_df`-Kerzen,
     chronologisch STRIKT NACH der Referenzkerze -- kein Blick in die eigene Kerze)?
 
     Args:
-        reference_df: OHLCV-DataFrame der Referenz-Kerzen (Standard: 4h), DatetimeIndex.
+        reference_df: OHLCV-DataFrame der Referenz-Kerzen (Standard: 4h), DatetimeIndex (=
+            Kerzen-OEFFNUNGSzeit, Standard-OHLCV-Konvention).
         intraday_df: feinere OHLCV-Kerzen (Standard: 15m) fuer die Reihenfolge-Bestimmung.
         barrier_pct: symmetrischer Abstand in Prozent vom Schlusskurs.
+        reference_timeframe: Dauer der Referenzkerze (Standard: '4h') -- bestimmt, wann `entry`
+            (der SCHLUSSkurs der Referenzkerze) ueberhaupt real bekannt/handelbar ist.
 
     Returns:
         DataFrame (Index = reference_df-Zeitstempel) mit 'entry', 'label' (0=runter zuerst,
         1=hoch zuerst), 'exit_time'. Zeilen ohne bestimmbares Ergebnis (z.B. am Ende der
         verfuegbaren Historie, wo weder Barriere je erreicht wird) werden weggelassen.
     """
+    # Bugfix 2026-08-11 (Live-vs-Backtest-Validierung): `entry` ist der SCHLUSSkurs der
+    # Referenzkerze, der aber erst bei ts + reference_timeframe (Kerzenschluss) real bekannt ist
+    # -- `ts` selbst ist nur die Kerzen-OEFFNUNG (Standard-OHLCV-Konvention, siehe
+    # predict_next_barrier.py: ref_ts = letzte ABGESCHLOSSENE Kerze, entry_price = deren close,
+    # gehandelt beim naechsten Cron-Lauf NACH Kerzenschluss). Die vorherige Suche
+    # (`intraday_df.index > ts`) griff dadurch auf 15m-Baeren VOR dem Kerzenschluss zu -- also auf
+    # die Bildungsphase der Referenzkerze selbst, bevor der als `entry` verwendete Schlusskurs
+    # ueberhaupt real existiert. Verifiziert am aktuellen Trainings-Datensatz: 36% aller Beispiele
+    # hatten ein Label/exit_time, das auf diese Weise aus der eigenen, noch nicht abgeschlossenen
+    # Kerze stammte -- echtes Lookahead im Trainings-Target, nicht nur eine Anzeige-Ungenauigkeit.
+    ref_delta = pd.Timedelta(minutes=TIMEFRAME_MINUTES[reference_timeframe])
+
     records = []
     n = len(reference_df)
     start_time = time.time()
@@ -51,7 +71,7 @@ def compute_barrier_labels(reference_df: pd.DataFrame, intraday_df: pd.DataFrame
         entry = float(row['close'])
         up_level = entry * (1 + barrier_pct / 100.0)
         down_level = entry * (1 - barrier_pct / 100.0)
-        future_bars = intraday_df[intraday_df.index > ts]
+        future_bars = intraday_df[intraday_df.index >= ts + ref_delta]
         label, exit_time = None, None
         for fts, bar in future_bars.iterrows():
             if bar['low'] <= down_level:
@@ -115,7 +135,8 @@ def build_barrier_examples(ohlcv_by_timeframe: dict, reference_timeframe: str, i
     reference_df = ohlcv_by_timeframe[reference_timeframe]
     intraday_df = ohlcv_by_timeframe[intraday_timeframe]
     feat_ref = feats_for(reference_timeframe, show_progress=True)
-    labels = compute_barrier_labels(reference_df, intraday_df, barrier_pct=barrier_pct)
+    labels = compute_barrier_labels(reference_df, intraday_df, barrier_pct=barrier_pct,
+                                     reference_timeframe=reference_timeframe)
 
     joined_index = sorted(feat_ref.index.intersection(labels.index))
     if not joined_index:
