@@ -8,7 +8,7 @@
         "margin_mode": "isolated",
         "risk_per_trade_pct": 2.0,
         "anti_martingale_enabled": true,
-        "live_trading_enabled": false,
+        "live_trading_enabled": true,
         "history_days": 1000,
         "val_split": 0.30,
         "backtest_start_capital": 15.0,
