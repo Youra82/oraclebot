@@ -23,13 +23,13 @@ from oraclebot.strategy.barrier_signal import compute_barrier_signal
 from oraclebot.utils.barrier_gate import check_barrier_gate, mark_barrier_run_complete
 from oraclebot.utils.config import load_barrier_config
 from oraclebot.utils.config import load_settings as load_settings_json
-from oraclebot.utils.data_fetch import fetch_ohlcv_incremental
+from oraclebot.utils.data_fetch import fetch_ohlcv_incremental, resample_ohlcv
 from oraclebot.utils.telegram import send_message
 
 TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
 # Genug Kerzen fuers laengste Feature-Warmup (EMA-50/MACD) je Timeframe. 1M/1w nutzen in
 # feature_settings_by_timeframe deutlich kleinere Fenster (siehe settings.json) -- 60 Kerzen
-# reichen dort, mehr gibt es bei 1M ueber Bitget ohnehin kaum (~50 Kerzen Gesamthistorie).
+# reichen dort.
 MIN_CANDLES_BY_TF = {'1M': 60, '1w': 60, '1d': 120, '4h': 120, '1h': 120, '15m': 120}
 
 
@@ -128,10 +128,23 @@ if __name__ == '__main__':
     # merge_asof(direction='backward'), das beim Training verwendet wurde.
     feature_kwargs_by_timeframe = barrier_cfg.get('feature_settings_by_timeframe', {})
     for ctx_tf in context_tfs:
-        ctx_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{ctx_tf}.pkl")
         ctx_min_candles = MIN_CANDLES_BY_TF.get(ctx_tf, 120)
         logger.info(f"Lade Kontext-Timeframe {ctx_tf}...")
-        ctx_df = fetch_ohlcv_incremental(symbol, ctx_tf, min_candles=ctx_min_candles, cache_path=ctx_cache_path)
+        if ctx_tf == '1M':
+            # Bitgets eigener '1M'-Endpunkt ist unzuverlaessig (siehe data_fetch.fetch_all_timeframes
+            # fuer die Begruendung -- dort deshalb schon seit 2026-07-26 per resample_ohlcv() aus '1d'
+            # abgeleitet statt direkt abgefragt). Dieser Live-Pfad hier fetchte bislang trotzdem noch
+            # direkt gegen den '1M'-Endpunkt -- Symptom live: der inkrementelle Fetch lieferte
+            # wiederholt NICHTS Neues, der Cache blieb auf derselben Monatskerze eingefroren, waehrend
+            # die 4h-Referenzkerze weiterlief, bis die Kontext-Luecke die 60-Tage-Alarmgrenze riss
+            # (Telegram-Alarme ab 2026-08-30). Fix: wie beim Training aus '1d' resamplen.
+            d1_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_1d.pkl")
+            d1_min_candles = max(MIN_CANDLES_BY_TF.get('1d', 120), ctx_min_candles * 31)
+            d1_df = fetch_ohlcv_incremental(symbol, '1d', min_candles=d1_min_candles, cache_path=d1_cache_path)
+            ctx_df = resample_ohlcv(d1_df, '1M')
+        else:
+            ctx_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{ctx_tf}.pkl")
+            ctx_df = fetch_ohlcv_incremental(symbol, ctx_tf, min_candles=ctx_min_candles, cache_path=ctx_cache_path)
         ctx_df = _drop_incomplete_last_candle(ctx_df, ctx_tf)
         ctx_kwargs = {**barrier_cfg['feature_settings'], **feature_kwargs_by_timeframe.get(ctx_tf, {})}
         ctx_feat = compute_features(ctx_df, **ctx_kwargs)
