@@ -7,6 +7,11 @@ secret.json
 logs/
 *.lock
 
+# Echte Bitget-Kontoauszuege (Order-/Positions-/Transaktionshistorie, Account-ID sichtbar) --
+# nie ins Repo, nur lokal fuer Live-vs-Backtest-Abgleich.
+livetrades/
+daten/
+
 # Generierte Charts -- koennen gross werden, jederzeit neu erzeugbar
 artifacts/charts/
 
