@@ -1,17 +1,17 @@
 {
-  "leverage": 40,
-  "min_confidence": 0.5,
+  "leverage": 30,
+  "min_confidence": 0.65,
   "model_max_depth": 2,
-  "anti_martingale_base_pct": 14.804391610622403,
+  "anti_martingale_base_pct": 14.31946430206299,
   "anti_martingale_growth_factor": 1.5,
-  "anti_martingale_streak_target": 2,
+  "anti_martingale_streak_target": 3,
   "_meta": {
-    "optimized_at": "2026-07-28T05:30:58.337995+00:00",
+    "optimized_at": "2026-08-30T18:51:07.217501+00:00",
     "start_capital_used": 15.0,
     "dd_limit_used": 50.0,
-    "walk_forward_mean": 0.7254237288135593,
-    "walk_forward_worst_case": 0.6949152542372882,
-    "confirmation_oos_accuracy": 0.7337570621468926,
+    "walk_forward_mean": 0.6488471056222392,
+    "walk_forward_worst_case": 0.6144200626959248,
+    "confirmation_oos_accuracy": 0.674934725848564,
     "max_safe_leverage_at_selection": 48.09674316339128
   }
 }
