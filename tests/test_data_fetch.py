@@ -143,6 +143,64 @@ def test_incremental_does_not_retry_when_fetch_ohlcv_already_did_its_best(tmp_pa
     assert len(df) == 8
 
 
+def test_existing_cache_shorter_than_min_candles_triggers_one_backfill_fetch(tmp_path):
+    """Bugfix 2026-09-05 (oraclebot Live-vs-Offline-Feature-Diff): anders als beim leeren Cache
+    oben (der bereits `_probe_next_available_ts` durchlaeuft) hat ein BESTEHENDER, zu kurzer
+    Cache diesen Weg nie gesehen -- der inkrementelle Zweig schaut nur ab dem letzten Cache-Stand
+    nach VORNE, nie vor `cache.index[0]` zurueck. Live beobachtet: eine alte Cache-Datei blieb bei
+    312 Kerzen ab 2025-10-29 haengen und loggte faelschlich 'vermutlich eine echte
+    Boersen-Datenluecke', obwohl ein kompletter Neuabruf echte Daten bis 2023-10-15 (1057 Kerzen)
+    fand. Ein einmaliger kompletter Neuabruf MUSS also versucht werden, und sein Ergebnis MUSS
+    uebernommen werden, wenn es tatsaechlich weiter zurueckreicht."""
+    cache_path = tmp_path / 'cache.pkl'
+    cached = make_cached_df(n=3, start='2026-07-01')  # 07-01, 07-02, 07-03
+    cached.to_pickle(cache_path)
+
+    # 1. Aufruf: normaler inkrementeller Refresh (since = aeltestes gecachtes Datum, da n=3 <
+    #    REFRESH_WINDOW=5) -- bestaetigt nur den bestehenden Bereich neu, keine Verlaengerung.
+    incremental_refresh = pd.DataFrame(
+        {'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0, 'volume': 1.0}, index=cached.index)
+    # 2. Aufruf: der neue Backfill-Versuch (limit=min_candles, KEIN since_ms) -- liefert diesmal
+    #    7 zusaetzliche, aeltere Kerzen vor dem bisherigen Cache-Start.
+    backfilled = pd.DataFrame(
+        {'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0, 'volume': 1.0},
+        index=pd.date_range('2026-06-24', periods=10, freq='D', tz='UTC'))
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.side_effect = [incremental_refresh, backfilled]
+        df = fetch_ohlcv_incremental(SYMBOL, '1d', min_candles=10, cache_path=str(cache_path))
+
+    assert mock_fetch.call_count == 2
+    second_call_kwargs = mock_fetch.call_args_list[1].kwargs
+    assert second_call_kwargs.get('limit') == 10
+    assert 'since_ms' not in second_call_kwargs or second_call_kwargs['since_ms'] is None
+    assert len(df) == 10
+    assert df.index[0] == pd.Timestamp('2026-06-24', tz='UTC')
+
+
+def test_backfill_attempt_keeps_existing_data_when_no_older_candles_found(tmp_path):
+    """Gegenstueck zum Test oben: bestaetigt der Backfill-Versuch nur denselben (oder einen
+    juengeren) Startpunkt wie der bestehende Cache, handelt es sich um eine echte, dauerhafte
+    Grenze -- der bestehende Cache-Inhalt darf dabei NICHT verloren gehen oder verkleinert
+    werden, und es darf kein zweiter/weiterer Retry folgen."""
+    cache_path = tmp_path / 'cache.pkl'
+    cached = make_cached_df(n=3, start='2026-07-01')
+    cached.to_pickle(cache_path)
+
+    incremental_refresh = pd.DataFrame(
+        {'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0, 'volume': 1.0}, index=cached.index)
+    # Backfill-Versuch liefert denselben Startpunkt zurueck -- keine aelteren Kerzen verfuegbar.
+    no_older_data = incremental_refresh.copy()
+
+    with patch('oraclebot.utils.data_fetch.fetch_ohlcv') as mock_fetch:
+        mock_fetch.side_effect = [incremental_refresh, no_older_data]
+        df = fetch_ohlcv_incremental(SYMBOL, '1d', min_candles=10, cache_path=str(cache_path))
+
+    assert mock_fetch.call_count == 2
+    assert len(df) == 3
+    assert df.index[0] == pd.Timestamp('2026-07-01', tz='UTC')
+
+
 def _make_mock_exchange(fetch_responses, now_ms, timeframe_seconds):
     """fetch_responses: Liste von Kerzen-Listen -- jeder exchange.fetch_ohlcv()-Aufruf liefert
     das naechste Element (leere Liste, sobald die Liste erschoepft ist)."""
