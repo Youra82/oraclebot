@@ -44,6 +44,22 @@ def _drop_incomplete_last_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFra
     return df.iloc[:-1] if now < close_time else df
 
 
+def _log_feature_block(label: str, ts, names: list, values: list) -> None:
+    """Loggt einen Feature-Block als eine JSON-Zeile (Timestamp + Name->Wert, 8 Nachkommastellen).
+
+    Eingefuehrt 2026-09-05 zur Live-vs-Offline-Diagnose: ein rekonstruierter Backtest mit der
+    exakt gleichen, aus Git extrahierten Modell-Datei ergab fuer dieselbe historische
+    Referenzkerze (identischer Entry-Preis) die GEGENTEILIGE Richtung bei abweichender Konfidenz
+    (Live: down_first 66.4% vs. Offline-Rekonstruktion: up_first 63.2%, Kerze vom 2026-08-31
+    08:00 UTC, 4 Stunden alt zum Entscheidungszeitpunkt -- also kein "Kerze noch nicht
+    settled"-Effekt). Da nur Konfidenz/Richtung geloggt wurden, liess sich nicht feststellen,
+    welcher der ~21 Werte je Block (Referenz + 5 Kontext-Timeframes) dafuer verantwortlich ist.
+    Diese Zeilen ermoeglichen den direkten Abgleich mit den 'features' aus dem Offline-Datensatz
+    (artifacts/datasets/barrier_*.jsonl) fuer dieselbe Referenzkerze."""
+    payload = {'block': label, 'ts': str(ts), **{n: round(float(v), 8) for n, v in zip(names, values)}}
+    logger.info(f"FEATURE-DUMP {json.dumps(payload, sort_keys=False)}")
+
+
 def load_secrets(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -122,6 +138,7 @@ if __name__ == '__main__':
     ref_ts = feat.index[-1]
     entry_price = float(df.loc[ref_ts, 'close'])
     feature_row = feat.loc[ref_ts, FEATURE_NAMES].tolist()
+    _log_feature_block(reference_tf, ref_ts, FEATURE_NAMES, feature_row)
 
     # Kontext-Timeframes (siehe barrier_targets.build_barrier_examples): je Timeframe die letzte
     # VOR/BEI der Referenzkerze abgeschlossene Kerze anhaengen -- entspricht live demselben
@@ -165,7 +182,9 @@ if __name__ == '__main__':
             send_message(telegram_early.get('bot_token'), telegram_early.get('chat_id'), message)
             sys.exit(1)
         logger.info(f"  {ctx_tf}: letzte abgeschlossene Kerze <= Referenz: {ctx_ts}")
-        feature_row += ctx_feat.loc[ctx_ts, FEATURE_NAMES].tolist()
+        ctx_values = ctx_feat.loc[ctx_ts, FEATURE_NAMES].tolist()
+        _log_feature_block(ctx_tf, ctx_ts, FEATURE_NAMES, ctx_values)
+        feature_row += ctx_values
 
     predicted_class, confidence = predictor.predict_one(feature_row)
     from oraclebot.data.barrier_targets import BARRIER_LABELS
