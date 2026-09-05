@@ -145,7 +145,15 @@ if __name__ == '__main__':
     # merge_asof(direction='backward'), das beim Training verwendet wurde.
     feature_kwargs_by_timeframe = barrier_cfg.get('feature_settings_by_timeframe', {})
     for ctx_tf in context_tfs:
-        ctx_min_candles = MIN_CANDLES_BY_TF.get(ctx_tf, 120)
+        # '1d' wird u.U. zweimal gegen dieselbe Cache-Datei aufgerufen: hier direkt als eigener
+        # Kontext-Block UND unten fuer die '1M'-Ableitung mit history_days als min_candles. Beide
+        # Aufrufe MUESSEN denselben (groesseren) Wert nutzen -- sonst wuerde der kleinere Aufruf
+        # die Cache-Datei per Groessenkappung (min_candles*3) sofort wieder auf den kleineren Wert
+        # zurueckschneiden und den 1M-Backfill (siehe unten) bei jedem Lauf zunichtemachen.
+        if ctx_tf == '1d' and '1M' in context_tfs:
+            ctx_min_candles = barrier_cfg.get('history_days', 1000)
+        else:
+            ctx_min_candles = MIN_CANDLES_BY_TF.get(ctx_tf, 120)
         logger.info(f"Lade Kontext-Timeframe {ctx_tf}...")
         if ctx_tf == '1M':
             # Bitgets eigener '1M'-Endpunkt ist unzuverlaessig (siehe data_fetch.fetch_all_timeframes
@@ -155,8 +163,18 @@ if __name__ == '__main__':
             # wiederholt NICHTS Neues, der Cache blieb auf derselben Monatskerze eingefroren, waehrend
             # die 4h-Referenzkerze weiterlief, bis die Kontext-Luecke die 60-Tage-Alarmgrenze riss
             # (Telegram-Alarme ab 2026-08-30). Fix: wie beim Training aus '1d' resamplen.
+            #
+            # Bugfix 2026-09-05 (Live-vs-Offline-Feature-Diff): `min_candles` MUSS exakt
+            # `history_days` aus dem Training entsprechen (nicht eine eigene Formel wie vorher
+            # `ctx_min_candles * 31`) -- sonst bekommt dieser Live-Cache eine ANDERE Gesamtlaenge
+            # an '1d'-Historie als der Offline-Datensatz, aus dem das Modell trainiert wurde. Bei
+            # sehr kurzen 1M-Fenstern (feature_settings_by_timeframe: atr/ema/macd_slow=6 Monate)
+            # reicht schon ein unterschiedlicher Historien-Start, um die abgeleiteten Monats-
+            # Indikatoren spuerbar zu verschieben -- verifiziert: Live zeigte fuer eine Kerze
+            # `down_first 66.4%`, dieselbe Modell-Datei auf offline nachgebauten Features
+            # `up_first 63.2%`, exakt in diesem Kontext-Block, alle anderen Bloecke identisch.
             d1_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_1d.pkl")
-            d1_min_candles = max(MIN_CANDLES_BY_TF.get('1d', 120), ctx_min_candles * 31)
+            d1_min_candles = barrier_cfg.get('history_days', 1000)
             d1_df = fetch_ohlcv_incremental(symbol, '1d', min_candles=d1_min_candles, cache_path=d1_cache_path)
             ctx_df = resample_ohlcv(d1_df, '1M')
         else:

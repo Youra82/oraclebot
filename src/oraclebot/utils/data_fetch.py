@@ -198,6 +198,35 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
         logger.info(f"{symbol} {timeframe}: {len(fresh) if len(fresh) else 0} neue/aktualisierte Kerze(n) "
                     f"seit Cache-Stand ({len(cached)} -> {len(df)}), letzte Kerze jetzt: {df.index[-1]}.")
 
+        # Bugfix 2026-09-05 (Live-vs-Offline-Feature-Diff, oraclebot): der obige Zweig haengt bei
+        # einem bestehenden Cache NUR neue Kerzen ans Ende an -- er schaut nie vor `df.index[0]`
+        # zurueck, selbst wenn ein spaeterer Aufruf ein groesseres `min_candles` verlangt als beim
+        # allerersten Aufbau dieser Cache-Datei (z.B. weil ein Kontext-Timeframe wie hier '1M', das
+        # denselben '1d'-Cache mit einem viel groesseren min_candles mitnutzt, erst nachtraeglich
+        # dazukam). Symptom live beobachtet: Cache blieb bei 312 Kerzen ab 2025-10-29 haengen und
+        # loggte "vermutlich eine echte Boersen-Datenluecke", waehrend ein kompletter Neuabruf
+        # klaglos 1057 Kerzen bis 2023-10-15 lieferte -- die Kerzen EXISTIERTEN, der Cache hatte nur
+        # nie versucht, sie zu holen. Bei model_max_depth=2 und kurzen Kontext-Fenstern (z.B.
+        # 1M-Indikatoren mit window=6) reicht so ein Historien-Unterschied, um Konfidenz UND
+        # Richtung gegenueber einer Offline-Rekonstruktion zu kippen. Deshalb hier einmalig ein
+        # kompletter Neuabruf zum Vergleich, falls der Cache (auch nach dem Inkrement oben) kuerzer
+        # ist als angefordert -- nur uebernommen, wenn er tatsaechlich weiter zurueckreicht.
+        if len(df) < min_candles:
+            old_start = df.index[0]
+            logger.info(f"{symbol} {timeframe}: Cache reicht mit {len(df)} Kerzen (ab {old_start}) "
+                        f"nicht an die angeforderten {min_candles} heran -- teste per komplettem "
+                        f"Neuabruf, ob aeltere Kerzen existieren, die dieser Cache bisher nie "
+                        f"versucht hat zu holen...")
+            full = fetch_ohlcv(symbol, timeframe, limit=min_candles)
+            if len(full) > 0 and full.index[0] < old_start:
+                df = pd.concat([full, df])
+                df = df[~df.index.duplicated(keep='last')].sort_index()
+                logger.info(f"{symbol} {timeframe}: Backfill erfolgreich -- Cache jetzt {len(df)} "
+                            f"Kerzen ab {df.index[0]} (vorher ab {old_start}).")
+            else:
+                logger.info(f"{symbol} {timeframe}: Neuabruf bestaetigt {old_start} als fruehesten "
+                            f"verfuegbaren Zeitpunkt -- kein Backfill moeglich.")
+
     # Cache nicht unbegrenzt wachsen lassen -- genug Puffer fuer kuenftige Fenster-Vergroesserungen.
     if len(df) > min_candles * 3:
         df = df.iloc[-min_candles * 3:]
@@ -206,17 +235,19 @@ def fetch_ohlcv_incremental(symbol: str, timeframe: str, min_candles: int, cache
     df.to_pickle(cache_path)
 
     if len(df) < min_candles:
-        # KEIN Backfill-Retry mehr (Bugfix 2026-07-26): fetch_ohlcv() hat bereits sein Bestes
-        # versucht, inklusive aktivem Ueberspringen echter Boersen-Datenluecken (siehe
-        # _probe_next_available_ts). Ein Shortfall an dieser Stelle bedeutet fast immer, dass
-        # genau diese Anzahl Kerzen tatsaechlich existiert (der Rest fehlt dauerhaft wegen einer
-        # echten Luecke) -- ein identischer Retry wuerde denselben Fetch samt Luecken-Suche
-        # einfach nochmal komplett wiederholen und dabei mehrere Minuten verschwenden, ohne je
-        # mehr Kerzen zu bekommen (live beobachtet: derselbe "Leere Antwort"/Luecken-Fund
-        # erschien zweimal identisch im Log).
-        logger.info(f"{symbol} {timeframe}: {len(df)}/{min_candles} Kerzen verfuegbar (vermutlich "
-                    f"wegen einer echten Boersen-Datenluecke, siehe ggf. 'uebersprungene Luecke(n)' "
-                    f"oben) -- kein weiterer Nachlade-Versuch.")
+        # KEIN weiterer Retry mehr (Bugfix 2026-07-26, ergaenzt 2026-09-05): fetch_ohlcv() hat
+        # bereits sein Bestes versucht (inkl. Luecken-Ueberspringen via _probe_next_available_ts),
+        # UND -- falls dieser Aufruf einen bestehenden, zu kurzen Cache vorfand -- der Backfill-
+        # Versuch oben hat zusaetzlich geprueft, ob vor dem bisherigen Cache-Start noch aeltere
+        # Kerzen existieren (siehe dortiger Kommentar: genau das war 2026-09-05 der eigentliche
+        # Fehler, nicht eine echte Luecke -- eine seit langem bestehende Cache-Datei hatte nie
+        # versucht, weiter als bis zu ihrem urspruenglichen, kleineren min_candles zurueckzuschauen).
+        # Ein Shortfall an dieser Stelle bedeutet jetzt wirklich, dass genau diese Anzahl Kerzen
+        # der frueheste verfuegbare Zeitpunkt ist -- ein weiterer identischer Retry wuerde nur
+        # Zeit verschwenden, ohne je mehr Kerzen zu bekommen.
+        logger.info(f"{symbol} {timeframe}: {len(df)}/{min_candles} Kerzen verfuegbar (Backfill "
+                    f"geprueft, {df.index[0]} ist der fruehest verfuegbare Zeitpunkt) -- kein "
+                    f"weiterer Nachlade-Versuch.")
 
     return df
 
