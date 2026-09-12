@@ -78,7 +78,8 @@ oraclebot/
 ├── scripts/
 │   ├── train_barrier_model.py     # Trainiert das Barriere-Modell + Walk-Forward-Robustheitscheck
 │   ├── optimize_barrier_model.py  # Sucht min_confidence/model_max_depth/Anti-Martingale systematisch (strikte OOS-Disziplin)
-│   ├── predict_next_barrier.py    # Live-Inferenz + Trading auf 4h-Kadenz (per Cron)
+│   ├── predict_next_barrier.py    # Live-Inferenz + Trading auf 4h-Kadenz (per Cron) + taeglicher Signal-Check (00:00 UTC)
+│   ├── check_live_signals.py      # Manueller/lokaler Live-vs-Modell-Signalvergleich (dieselbe Logik on-demand)
 │   └── show_results.py            # Diagnose + Anti-Martingale-Backtest + Chart/Excel-Export
 ├── run_pipeline.sh                # Interaktiv: trainiert das Modell (ruft train_barrier_model.py)
 ├── optimize.sh                    # Interaktiv: Parameter-Suche (ruft optimize_barrier_model.py)
@@ -95,13 +96,17 @@ oraclebot/
     │   ├── features.py            # Kerze -> 21 Markt-Token-Features (kausal, kein Lookahead)
     │   ├── barrier_targets.py     # Barriere-Zieldefinition + Multi-Timeframe-Trainingsbeispiel-Bau
     │   ├── dataset.py             # JSON-Lines-Persistenz fuer Trainingsbeispiele
-    │   └── scaler.py              # StandardScaler-Wrapper (Modell-Input-Normalisierung)
+    │   ├── scaler.py              # StandardScaler-Wrapper (Modell-Input-Normalisierung)
+    │   └── live_features.py       # Feature-Rekonstruktion fuer EINE Referenzkerze ueber den Live-Cache --
+    │                               # geteilt von predict_next_barrier.py UND dem Signal-Check (siehe unten),
+    │                               # damit beide garantiert dieselben Features berechnen
     │
     ├── model/
     │   └── barrier_model.py       # BarrierPredictor: HistGradientBoostingClassifier-Wrapper
     │
     ├── analysis/
-    │   └── evaluation.py          # Walk-Forward/Bootstrap/Trade-Aufbau -- geteilt von Training, Optimizer, show_results.py
+    │   ├── evaluation.py          # Walk-Forward/Bootstrap/Trade-Aufbau -- geteilt von Training, Optimizer, show_results.py
+    │   └── live_signal_check.py   # Taeglicher Live-vs-Modell-Signalvergleich (siehe unten)
     │
     ├── strategy/
     │   ├── barrier_signal.py      # Vorhersage -> Handelssignal (Entry/SL/TP)
@@ -113,8 +118,8 @@ oraclebot/
     │
     └── utils/
         ├── data_fetch.py          # Oeffentlicher OHLCV-Download (ccxt, Bitget)
-        ├── exchange.py            # Authentifizierter Bitget-Wrapper (Live-Order-Platzierung)
-        ├── barrier_gate.py        # 4h-Zeitfenster + Perioden-Marker (Doppel-Versand-Schutz)
+        ├── exchange.py            # Authentifizierter Bitget-Wrapper (Live-Order-Platzierung + Positions-Historie)
+        ├── barrier_gate.py        # 4h-/24h-Zeitfenster + Perioden-Marker (Doppel-Versand-Schutz)
         ├── training_history.py    # Protokolliert Trainingslaeufe, warnt bei Parameter-Tuning-Overfitting-Risiko
         ├── config.py              # Laedt + mischt settings.json + Strategie-Config zu einem Dict
         ├── margin_safety.py       # Sicherheits-Hebel gegen vorzeitige Bitget-Liquidation (siehe "Wichtige Regeln")
@@ -290,6 +295,44 @@ nano settings.json   # "live_trading_enabled": true
 
 Ohne `oraclebot`-Keys in `secret.json` bricht `predict_next_barrier.py` bei
 `live_trading_enabled=true` kontrolliert mit einer klaren Fehlermeldung ab.
+
+---
+
+## Täglicher Live-vs-Modell-Signalvergleich
+
+Prüft automatisch, ob echte Live-Trades (von Bitget abgerufen, `fetch_positions_history`) mit
+dem aktuell deployten Modell übereinstimmen -- entstanden aus einer manuellen Recherche
+(2026-09-12), die über eine Git-Historie-Rekonstruktion echte Live-vs-Offline-Abweichungen fand
+(teils durch den bereits gefixten 1d-Cache-Bug, Commit `1c9ebeb`, erklärt). Automatisiert dieselbe
+Prüfung, statt sie nur bei manueller Nachfrage zu machen.
+
+**Läuft automatisch** in `predict_next_barrier.py` -- **kein eigener Cronjob**, sondern
+reused denselben 15-Minuten-Cron über ein eigenes 24h-Zeitfenster-Gate (`check_barrier_gate` mit
+`period_hours=24`, feuert in den ersten 30 Minuten nach 00:00 UTC, eigener Marker
+`last_signal_check_run.txt` verhindert Doppelläufe -- analog zum 4h-Gate). Vergleicht die Live-
+Trades der letzten 24h gegen das Modell, hängt das Ergebnis an
+`artifacts/datasets/signal_comparison_history.jsonl` an (nicht in Git, wächst über die Zeit) und
+verschickt eine Zusammenfassung per Telegram. Läuft in einem eigenen `try/except` -- ein Fehler
+hier blockiert nie das eigentliche Live-Trading desselben Laufs.
+
+**Manuell/lokal** (z.B. um nicht auf den nächsten VPS-Tick zu warten):
+
+```bash
+PYTHONPATH=src python scripts/check_live_signals.py --days 7           # nur Konsole
+PYTHONPATH=src python scripts/check_live_signals.py --days 7 --telegram --log
+```
+
+**Wichtige Einschränkung:** der Vergleich prüft nur gegen das AKTUELL deployte Modell -- sinnvoll
+für die letzten 24h (Modell ändert sich nicht binnen eines Tages), aber bei einem Retrain
+erscheinen ältere Trades im selben Fenster fälschlich als Mismatch, obwohl sie unter dem
+VORHERIGEN Modell korrekt waren. Kein Ersatz für eine Git-Historie-Rekonstruktion über längere,
+retrain-übergreifende Zeiträume.
+
+Die Feature-Rekonstruktion (`data/live_features.py::build_reference_feature_vector()`) ist
+dieselbe Funktion, die auch `predict_next_barrier.py` für die aktuellste Kerze nutzt (per
+`ref_ts=None`) -- ein Refactor aus der vormals inline in `predict_next_barrier.py` verdrahteten
+Logik, damit Live-Signal und Signal-Check garantiert nicht auseinanderlaufen können (dasselbe
+Bug-Muster wie beim 1d-Cache-Fix).
 
 ---
 

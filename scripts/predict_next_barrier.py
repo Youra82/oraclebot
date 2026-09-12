@@ -17,31 +17,15 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 
-from oraclebot.data.features import compute_features
+from oraclebot.data.features import FEATURE_NAMES
+from oraclebot.data.live_features import (FeatureReconstructionError, TIMEFRAME_MINUTES,
+                                           build_reference_feature_vector)
 from oraclebot.model.barrier_model import BarrierPredictor
 from oraclebot.strategy.barrier_signal import compute_barrier_signal
 from oraclebot.utils.barrier_gate import check_barrier_gate, mark_barrier_run_complete
 from oraclebot.utils.config import load_barrier_config
 from oraclebot.utils.config import load_settings as load_settings_json
-from oraclebot.utils.data_fetch import fetch_ohlcv_incremental, resample_ohlcv
 from oraclebot.utils.telegram import send_message
-
-TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
-# Genug Kerzen fuers laengste Feature-Warmup (EMA-50/MACD) je Timeframe. 1M/1w nutzen in
-# feature_settings_by_timeframe deutlich kleinere Fenster (siehe settings.json) -- 60 Kerzen
-# reichen dort.
-MIN_CANDLES_BY_TF = {'1M': 60, '1w': 60, '1d': 120, '4h': 120, '1h': 120, '15m': 120}
-
-
-def _drop_incomplete_last_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
-    """Wie in predict_next_candle.py -- das Modell hat im Training nur abgeschlossene Kerzen
-    gesehen (siehe No-Lookahead-Regel in barrier_targets.py)."""
-    if df.empty:
-        return df
-    now = pd.Timestamp.now(tz='UTC')
-    last_open = df.index[-1]
-    close_time = last_open + pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
-    return df.iloc[:-1] if now < close_time else df
 
 
 def _log_feature_block(label: str, ts, names: list, values: list) -> None:
@@ -107,17 +91,59 @@ if __name__ == '__main__':
         sys.exit(1)
     predictor = BarrierPredictor.load(model_path)
 
+    # Taeglicher Live-vs-Modell-Signalvergleich: reuse denselben 15-Minuten-Cron statt eines
+    # eigenen Cronjobs, ueber ein eigenes 24h-Zeitfenster-Gate (check_barrier_gate mit
+    # period_hours=24 feuert einmal taeglich in den ersten 30 Minuten nach 00:00 UTC, eigener
+    # Marker verhindert Doppel-Laeufe -- exakt dasselbe Muster wie das 4h-Gate oben). Laeuft VOR
+    # der eigentlichen Signal-/Trade-Logik und in einem eigenen try/except, damit ein Fehler hier
+    # niemals das eigentliche Live-Trading dieses Laufs verhindert.
+    daily_check_marker = os.path.join(artifacts_dir, 'last_signal_check_run.txt')
+    should_run_daily_check, _ = check_barrier_gate(now_utc, daily_check_marker, period_hours=24)
+    if should_run_daily_check or args.force:
+        try:
+            from oraclebot.analysis.live_signal_check import (append_report_to_log, build_signal_comparison,
+                                                                format_telegram_report)
+            check_secrets = load_secrets(os.path.join(os.path.dirname(__file__), '..', 'secret.json'))
+            check_accounts = check_secrets.get('oraclebot', [])
+            if check_accounts and check_accounts[0].get('apiKey'):
+                from oraclebot.utils.exchange import Exchange
+                check_exchange = Exchange(check_accounts[0])
+                since_ts = now_utc - pd.Timedelta(hours=24)
+                daily_report = build_signal_comparison(barrier_cfg, predictor, check_exchange, artifacts_dir,
+                                                        since_ts=since_ts, now_utc=now_utc)
+                append_report_to_log(daily_report, os.path.join(artifacts_dir, 'signal_comparison_history.jsonl'))
+                logger.info(f"Taeglicher Signal-Check: {daily_report['n_match']}/{daily_report['n_comparable']} "
+                            f"Match ({daily_report['n_trades']} Live-Trades seit {since_ts}).")
+                if settings.get('notification_settings', {}).get('telegram_enabled', False):
+                    check_telegram_cfg = check_secrets.get('telegram', {})
+                    send_message(check_telegram_cfg.get('bot_token'), check_telegram_cfg.get('chat_id'),
+                                 format_telegram_report(daily_report, symbol))
+            else:
+                logger.info("Taeglicher Signal-Check uebersprungen: keine 'oraclebot'-API-Keys in secret.json.")
+        except Exception as e:
+            logger.error(f"Taeglicher Signal-Check fehlgeschlagen (Live-Trading laeuft trotzdem weiter): {e}",
+                         exc_info=True)
+        if should_run_daily_check and not args.force:
+            mark_barrier_run_complete(now_utc, daily_check_marker, period_hours=24)
+
     logger.info(f"Lade Marktdaten fuer {symbol} ({reference_tf}, inkrementeller Live-Cache)...")
-    cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{reference_tf}.pkl")
-    # Genug Historie fuer das laengste Feature-Warmup (EMA-50/MACD) plus Sicherheitsmarge.
-    min_candles = 120
-    df = fetch_ohlcv_incremental(symbol, reference_tf, min_candles=min_candles, cache_path=cache_path)
-    df = _drop_incomplete_last_candle(df, reference_tf)
-    logger.info(f"  {reference_tf}: {len(df)} Kerzen, letzte abgeschlossene: {df.index[-1]}")
+    try:
+        result = build_reference_feature_vector(symbol, reference_tf, context_tfs, barrier_cfg,
+                                                  artifacts_dir, ref_ts=None, now_utc=now_utc)
+    except FeatureReconstructionError as e:
+        logger.error(f"{e} Breche ab.")
+        sys.exit(1)
+
+    ref_ts = result['ref_ts']
+    entry_price = result['entry_price']
+    feature_row = result['feature_row']
+    for label, ts, values in result['blocks']:
+        _log_feature_block(label, ts, FEATURE_NAMES, values)
+    logger.info(f"  {reference_tf}: letzte abgeschlossene Kerze: {ref_ts}")
 
     # Sicherheitsnetz gegen stille Cache-/Fetch-Fehler (wie predict_next_candle.py): die letzte
     # abgeschlossene Referenzkerze darf nicht aelter als das 2-fache der Periodenlaenge sein.
-    staleness = now_utc - df.index[-1]
+    staleness = now_utc - ref_ts
     max_staleness = pd.Timedelta(minutes=TIMEFRAME_MINUTES[reference_tf]) * 2
     if staleness > max_staleness and not args.force:
         message = (f"ACHTUNG oraclebot (Barriere-Strategie): letzte abgeschlossene {reference_tf}-Kerze "
@@ -129,65 +155,10 @@ if __name__ == '__main__':
         send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'), message)
         sys.exit(1)
 
-    feat = compute_features(df, **barrier_cfg['feature_settings'])
-    if len(feat) == 0:
-        logger.error("compute_features() lieferte keine Zeilen (zu wenig Historie fuer Warmup). Breche ab.")
-        sys.exit(1)
-
-    from oraclebot.data.features import FEATURE_NAMES
-    ref_ts = feat.index[-1]
-    entry_price = float(df.loc[ref_ts, 'close'])
-    feature_row = feat.loc[ref_ts, FEATURE_NAMES].tolist()
-    _log_feature_block(reference_tf, ref_ts, FEATURE_NAMES, feature_row)
-
-    # Kontext-Timeframes (siehe barrier_targets.build_barrier_examples): je Timeframe die letzte
-    # VOR/BEI der Referenzkerze abgeschlossene Kerze anhaengen -- entspricht live demselben
-    # merge_asof(direction='backward'), das beim Training verwendet wurde.
-    feature_kwargs_by_timeframe = barrier_cfg.get('feature_settings_by_timeframe', {})
-    for ctx_tf in context_tfs:
-        # '1d' wird u.U. zweimal gegen dieselbe Cache-Datei aufgerufen: hier direkt als eigener
-        # Kontext-Block UND unten fuer die '1M'-Ableitung mit history_days als min_candles. Beide
-        # Aufrufe MUESSEN denselben (groesseren) Wert nutzen -- sonst wuerde der kleinere Aufruf
-        # die Cache-Datei per Groessenkappung (min_candles*3) sofort wieder auf den kleineren Wert
-        # zurueckschneiden und den 1M-Backfill (siehe unten) bei jedem Lauf zunichtemachen.
-        if ctx_tf == '1d' and '1M' in context_tfs:
-            ctx_min_candles = barrier_cfg.get('history_days', 1000)
-        else:
-            ctx_min_candles = MIN_CANDLES_BY_TF.get(ctx_tf, 120)
-        logger.info(f"Lade Kontext-Timeframe {ctx_tf}...")
-        if ctx_tf == '1M':
-            # Bitgets eigener '1M'-Endpunkt ist unzuverlaessig (siehe data_fetch.fetch_all_timeframes
-            # fuer die Begruendung -- dort deshalb schon seit 2026-07-26 per resample_ohlcv() aus '1d'
-            # abgeleitet statt direkt abgefragt). Dieser Live-Pfad hier fetchte bislang trotzdem noch
-            # direkt gegen den '1M'-Endpunkt -- Symptom live: der inkrementelle Fetch lieferte
-            # wiederholt NICHTS Neues, der Cache blieb auf derselben Monatskerze eingefroren, waehrend
-            # die 4h-Referenzkerze weiterlief, bis die Kontext-Luecke die 60-Tage-Alarmgrenze riss
-            # (Telegram-Alarme ab 2026-08-30). Fix: wie beim Training aus '1d' resamplen.
-            #
-            # Bugfix 2026-09-05 (Live-vs-Offline-Feature-Diff): `min_candles` MUSS exakt
-            # `history_days` aus dem Training entsprechen (nicht eine eigene Formel wie vorher
-            # `ctx_min_candles * 31`) -- sonst bekommt dieser Live-Cache eine ANDERE Gesamtlaenge
-            # an '1d'-Historie als der Offline-Datensatz, aus dem das Modell trainiert wurde. Bei
-            # sehr kurzen 1M-Fenstern (feature_settings_by_timeframe: atr/ema/macd_slow=6 Monate)
-            # reicht schon ein unterschiedlicher Historien-Start, um die abgeleiteten Monats-
-            # Indikatoren spuerbar zu verschieben -- verifiziert: Live zeigte fuer eine Kerze
-            # `down_first 66.4%`, dieselbe Modell-Datei auf offline nachgebauten Features
-            # `up_first 63.2%`, exakt in diesem Kontext-Block, alle anderen Bloecke identisch.
-            d1_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_1d.pkl")
-            d1_min_candles = barrier_cfg.get('history_days', 1000)
-            d1_df = fetch_ohlcv_incremental(symbol, '1d', min_candles=d1_min_candles, cache_path=d1_cache_path)
-            ctx_df = resample_ohlcv(d1_df, '1M')
-        else:
-            ctx_cache_path = os.path.join(artifacts_dir, f"ohlcv_live_{safe_symbol}_{ctx_tf}.pkl")
-            ctx_df = fetch_ohlcv_incremental(symbol, ctx_tf, min_candles=ctx_min_candles, cache_path=ctx_cache_path)
-        ctx_df = _drop_incomplete_last_candle(ctx_df, ctx_tf)
-        ctx_kwargs = {**barrier_cfg['feature_settings'], **feature_kwargs_by_timeframe.get(ctx_tf, {})}
-        ctx_feat = compute_features(ctx_df, **ctx_kwargs)
-        ctx_feat = ctx_feat[ctx_feat.index <= ref_ts]
-        if len(ctx_feat) == 0:
-            logger.error(f"Kontext-Timeframe {ctx_tf}: keine gueltige Kerze <= Referenzzeitpunkt {ref_ts}. Breche ab.")
-            sys.exit(1)
-        ctx_ts = ctx_feat.index[-1]
+    # Kontext-Timeframes duerfen ebenfalls nicht zu weit hinter der Referenzkerze zurueckliegen
+    # (moeglicher Fetch-/Cache-Fehler -- siehe build_reference_feature_vector fuer die eigentliche
+    # merge_asof-Logik, hier nur noch die Frische-Pruefung je Block).
+    for ctx_tf, ctx_ts, _ in result['blocks'][1:]:
         ctx_gap = ref_ts - ctx_ts
         max_ctx_gap = pd.Timedelta(minutes=TIMEFRAME_MINUTES[ctx_tf]) * 2
         if ctx_gap > max_ctx_gap and not args.force:
@@ -200,13 +171,10 @@ if __name__ == '__main__':
             send_message(telegram_early.get('bot_token'), telegram_early.get('chat_id'), message)
             sys.exit(1)
         logger.info(f"  {ctx_tf}: letzte abgeschlossene Kerze <= Referenz: {ctx_ts}")
-        ctx_values = ctx_feat.loc[ctx_ts, FEATURE_NAMES].tolist()
-        _log_feature_block(ctx_tf, ctx_ts, FEATURE_NAMES, ctx_values)
-        feature_row += ctx_values
 
     predicted_class, confidence = predictor.predict_one(feature_row)
     from oraclebot.data.barrier_targets import BARRIER_LABELS
-    logger.info(f"\nReferenzkerze: {feat.index[-1]} | Entry: {entry_price:.2f}")
+    logger.info(f"\nReferenzkerze: {ref_ts} | Entry: {entry_price:.2f}")
     logger.info(f"Vorhersage: {BARRIER_LABELS[predicted_class]} (Konfidenz: {confidence:.1%})")
 
     signal = compute_barrier_signal(predicted_class, confidence, entry_price,
@@ -239,7 +207,7 @@ if __name__ == '__main__':
         dir_text = signal['direction'].upper() if signal['direction'] else 'KEIN TRADE'
         message = (
             f"oraclebot Barriere-Signal: {symbol} ({reference_tf})\n"
-            f"Referenzkerze: {feat.index[-1]}\n"
+            f"Referenzkerze: {ref_ts}\n"
             f"Entry: {entry_price:.2f}\n"
             f"Vorhersage: {BARRIER_LABELS[predicted_class]} (Konfidenz {confidence:.1%})\n"
             f"Richtung: {dir_text}"

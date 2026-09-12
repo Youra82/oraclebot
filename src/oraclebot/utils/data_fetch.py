@@ -81,7 +81,14 @@ def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 1000, exchange_id: str
 
     timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
     since = since_ms if since_ms is not None else exchange.milliseconds() - limit * timeframe_ms
-    fetch_limit = 200
+    # Bitget lehnt Anfragen ab, deren (aus since+limit abgeleitetes) Zeitfenster 90 Tage
+    # ueberschreitet ("startTime and endTime interval cannot be greater than 90 days") -- bei
+    # grobkoernigen Zeitebenen (v.a. '1w') reisst ein fixes fetch_limit=200 diese Grenze locker
+    # (200 Wochen ≈ 3.8 Jahre pro Chunk). Gefunden 2026-09-12: ein kompletter Neuabruf (leerer
+    # Cache) fuer '1w' schlug dadurch bereits beim ALLERERSTEN Chunk fehl -- der Fehler wurde nur
+    # geloggt, die Schleife brach sofort ab (siehe except-Zweig unten), der Cache blieb leer.
+    # 85 Tage statt 90 als Sicherheitsmarge.
+    fetch_limit = max(1, min(200, int(85 * 24 * 3600 * 1000 / timeframe_ms)))
 
     all_ohlcv = []
     start_time = time.time()

@@ -97,6 +97,24 @@ class Exchange:
             logger.error(f"Fehler beim Abrufen offener Positionen fuer {symbol}: {e}", exc_info=True)
             return []
 
+    def fetch_closed_positions(self, symbol: str, limit: int = 100) -> list:
+        """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) -- fuer den taeglichen
+        Live-Signal-Vergleich (analysis/live_signal_check.py). Anders als fetch_open_positions()
+        gibt Bitgets fetchPositionsHistory tatsaechlich abgeschlossene Positionen mit realisiertem
+        PnL zurueck (bestaetigt 2026-09-12, siehe Signal-Vergleich-Recherche) -- die fruehere
+        README-Annahme "Exchange kann keine Order-Historie abfragen" bezog sich nur auf
+        fetchClosedOrders/fetchMyTrades (dort fehlt der Realized-PnL je Position), nicht auf
+        diesen Endpunkt."""
+        if not self.markets:
+            return []
+        try:
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+            positions = self.exchange.fetch_positions_history([symbol], params=params, limit=limit)
+            return positions
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der Positions-Historie fuer {symbol}: {e}", exc_info=True)
+            return []
+
     # --- Margin / Leverage ---
 
     def set_margin_mode(self, symbol: str, margin_mode: str = 'isolated'):

@@ -40,6 +40,8 @@ artifacts/datasets/gdelt_bitcoin_tone_daily.csv
 # Ephemerer Perioden-Marker gegen Telegram-Doppelversand (siehe predict_next_barrier.py):
 # haelt fest, fuer welche 4h-Periode die Prognose schon gesendet wurde.
 artifacts/datasets/last_barrier_run.txt
+# Dasselbe fuer den taeglichen Live-Signal-Check (analysis/live_signal_check.py).
+artifacts/datasets/last_signal_check_run.txt
 
 # Live-Zustand der Anti-Martingale-Positionsgroesse (siehe anti_martingale.py) -- rein
 # runtime-generiert, pro Account unterschiedlich, nicht fuer Git geeignet.
