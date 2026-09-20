@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 
-from oraclebot.analysis.live_signal_check import (_reference_period_start, append_report_to_log,
-                                                    build_signal_comparison, fetch_recent_live_trades,
-                                                    format_telegram_report)
+from oraclebot.analysis.live_signal_check import (_load_backtest_reference, _reference_period_start,
+                                                    append_report_to_log, build_signal_comparison,
+                                                    fetch_recent_live_trades, format_telegram_report)
 from oraclebot.data.live_features import FeatureReconstructionError
 
 
@@ -57,6 +57,32 @@ def test_fetch_recent_live_trades_sorted_chronologically():
     assert trades[0]['ctime'] < trades[1]['ctime']
 
 
+def test_fetch_recent_live_trades_filters_by_close_time_not_open_time():
+    """Bugfix 2026-09-20: eine Position, die vor >24h eroeffnet wurde, aber INNERHALB des
+    since_ts-Fensters schloss, muss trotzdem auftauchen -- Live-Fund: Positionen blieben teils
+    >24h offen, der alte ctime-Filter liess sie systematisch durchs Raster fallen."""
+    opened_long_ago = int(pd.Timestamp('2026-09-01 00:00:00', tz='UTC').timestamp() * 1000)
+    closed_recently = int(pd.Timestamp('2026-09-11 12:00:00', tz='UTC').timestamp() * 1000)
+    exchange = FakeExchange([_make_position(opened_long_ago, closed_recently, 'short', 1.0)])
+    since_ts = pd.Timestamp('2026-09-10', tz='UTC')  # nach der Eroeffnung, aber vor der Schliessung
+
+    trades = fetch_recent_live_trades(exchange, 'BTC/USDT:USDT', '4h', since_ts)
+
+    assert len(trades) == 1
+    assert trades[0]['ctime'] == pd.Timestamp('2026-09-01 00:00:00', tz='UTC')
+
+
+def test_fetch_recent_live_trades_excludes_trade_closed_before_since():
+    ctime = int(pd.Timestamp('2026-09-01 00:00:00', tz='UTC').timestamp() * 1000)
+    utime = int(pd.Timestamp('2026-09-02 00:00:00', tz='UTC').timestamp() * 1000)
+    exchange = FakeExchange([_make_position(ctime, utime, 'short', 1.0)])
+    since_ts = pd.Timestamp('2026-09-10', tz='UTC')
+
+    trades = fetch_recent_live_trades(exchange, 'BTC/USDT:USDT', '4h', since_ts)
+
+    assert trades == []
+
+
 class FakePredictor:
     def __init__(self, cls, conf):
         self.cls = cls
@@ -76,6 +102,7 @@ def test_build_signal_comparison_counts_match_and_mismatch(monkeypatch):
         return {'ref_ts': ref_ts, 'entry_price': 100.0, 'feature_row': [0.0], 'blocks': []}
 
     monkeypatch.setattr('oraclebot.analysis.live_signal_check.build_reference_feature_vector', fake_build_vector)
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check._load_backtest_reference', lambda *a, **k: {})
 
     barrier_cfg = {'symbol': 'BTC/USDT:USDT', 'reference_timeframe': '4h', 'context_timeframes': [],
                    'min_confidence': 0.6, 'barrier_pct': 1.0}
@@ -90,6 +117,37 @@ def test_build_signal_comparison_counts_match_and_mismatch(monkeypatch):
     assert report['n_live_losses'] == 1
     assert report['trades'][0]['model_direction'] == 'long'
     assert report['trades'][0]['live_direction'] == 'short'
+
+
+def test_build_signal_comparison_sizes_cache_depth_from_oldest_ref_ts_not_since(monkeypatch):
+    """Bugfix 2026-09-20: eine Position, die lange offen war, hat eine ref_ts weit VOR since_ts
+    (siehe fetch_recent_live_trades-Bugfix, jetzt nach Schliesszeit gefiltert). Die Cache-Tiefe
+    muss bis zu dieser aelteren ref_ts zurueckreichen, nicht nur bis since_ts, sonst waere der
+    Live-Cache fuer genau diese Trades zu duenn."""
+    opened_long_ago = int(pd.Timestamp('2026-08-01 00:00:00', tz='UTC').timestamp() * 1000)
+    closed_recently = int(pd.Timestamp('2026-09-11 20:00:00', tz='UTC').timestamp() * 1000)
+    exchange = FakeExchange([_make_position(opened_long_ago, closed_recently, 'short', -1.0)])
+    predictor = FakePredictor(cls=0, conf=0.9)
+
+    captured = {}
+
+    def fake_build_vector(symbol, reference_tf, context_tfs, barrier_cfg, artifacts_dir, ref_ts=None, now_utc=None,
+                           min_candles=120, context_min_candles=None):
+        captured['min_candles'] = min_candles
+        return {'ref_ts': ref_ts, 'entry_price': 100.0, 'feature_row': [0.0], 'blocks': []}
+
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check.build_reference_feature_vector', fake_build_vector)
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check._load_backtest_reference', lambda *a, **k: {})
+
+    barrier_cfg = {'symbol': 'BTC/USDT:USDT', 'reference_timeframe': '4h', 'context_timeframes': [],
+                   'min_confidence': 0.6, 'barrier_pct': 1.0}
+    since_ts = pd.Timestamp('2026-09-10', tz='UTC')  # nach der Eroeffnung, vor der Schliessung
+    now_utc = pd.Timestamp('2026-09-12', tz='UTC')
+    build_signal_comparison(barrier_cfg, predictor, exchange, '/tmp/artifacts', since_ts=since_ts, now_utc=now_utc)
+
+    # since_ts (2026-09-10) waere ~2 Tage Spanne -> viel zu wenig; die tatsaechliche ref_ts liegt
+    # nahe am Eroeffnungsdatum (2026-08-01), also >40 Tage vor now_utc.
+    assert captured['min_candles'] > 40 * 24 * 60 / 240  # 240 = TIMEFRAME_MINUTES['4h']
 
 
 def test_build_signal_comparison_handles_feature_reconstruction_error(monkeypatch):
@@ -120,6 +178,46 @@ def test_build_signal_comparison_empty_when_no_trades():
                                       since_ts=pd.Timestamp('2026-09-01', tz='UTC'))
     assert report['n_trades'] == 0
     assert report['live_win_rate'] is None
+
+
+def test_load_backtest_reference_returns_empty_when_config_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check.CONFIGS_DIR', str(tmp_path))
+    assert _load_backtest_reference('BTC/USDT:USDT', '4h') == {}
+
+
+def test_load_backtest_reference_reads_meta_block(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check.CONFIGS_DIR', str(tmp_path))
+    config_path = tmp_path / 'config_BTC_USDT_USDT_4h.json'
+    config_path.write_text(json.dumps({
+        'leverage': 30, '_meta': {'confirmation_oos_accuracy': 0.675, 'walk_forward_mean': 0.649},
+    }), encoding='utf-8')
+
+    meta = _load_backtest_reference('BTC/USDT:USDT', '4h')
+
+    assert meta['confirmation_oos_accuracy'] == 0.675
+    assert meta['walk_forward_mean'] == 0.649
+
+
+def test_build_signal_comparison_includes_backtest_reference(monkeypatch):
+    exchange = FakeExchange([])
+    predictor = FakePredictor(cls=1, conf=0.9)
+    monkeypatch.setattr('oraclebot.analysis.live_signal_check._load_backtest_reference',
+                         lambda *a, **k: {'confirmation_oos_accuracy': 0.675, 'walk_forward_mean': 0.649})
+
+    barrier_cfg = {'symbol': 'BTC/USDT:USDT', 'reference_timeframe': '4h', 'context_timeframes': []}
+    report = build_signal_comparison(barrier_cfg, predictor, exchange, '/tmp/artifacts',
+                                      since_ts=pd.Timestamp('2026-09-01', tz='UTC'))
+
+    assert report['backtest_oos_accuracy'] == 0.675
+    assert report['backtest_walk_forward_mean'] == 0.649
+
+
+def test_format_telegram_report_shows_backtest_reference_when_present():
+    report = {'n_trades': 1, 'since': '2026-09-01T00:00:00+00:00', 'live_win_rate': 1.0,
+              'n_match': 1, 'n_mismatch': 0, 'n_comparable': 1, 'backtest_oos_accuracy': 0.675}
+    text = format_telegram_report(report, 'BTC/USDT:USDT')
+    assert '67.5%' in text
 
 
 def test_format_telegram_report_no_trades():

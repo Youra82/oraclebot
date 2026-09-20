@@ -21,8 +21,34 @@ import pandas as pd
 from oraclebot.data.live_features import (FeatureReconstructionError, MIN_CANDLES_BY_TF, TIMEFRAME_MINUTES,
                                            build_reference_feature_vector)
 from oraclebot.strategy.barrier_signal import compute_barrier_signal
+from oraclebot.utils.config import CONFIGS_DIR, config_filename
 
 logger = logging.getLogger(__name__)
+
+
+def _load_backtest_reference(symbol: str, reference_timeframe: str) -> dict:
+    """Liest NUR den '_meta'-Block der Strategie-Config (load_barrier_config() entfernt ihn --
+    siehe config.py), um eine Backtest-Erwartung fuer den taeglichen Bericht zu haben: 'wie gut
+    war das Modell beim letzten Training auf dem Out-of-Sample-Split?'. Bewusst NICHT der volle
+    Anti-Martingale-Backtest aus show_results.py (der braucht den lokalen Trainings-Datensatz-
+    Cache, der auf dem VPS i.d.R. NICHT vorhanden ist -- siehe README 'laufen NICHT auf dem VPS')
+    -- dieser _meta-Wert ist dagegen git-getrackt und damit ueberall verfuegbar, wo auch das
+    Modell selbst liegt.
+
+    HINWEIS: 'confirmation_oos_accuracy' ist die rohe Klassifikations-Genauigkeit des Modells auf
+    dem OOS-Split, NICHT die tatsaechliche Handels-Winrate nach min_confidence-Filterung (die liegt
+    typischerweise hoeher, siehe README-Vergleichstabelle: 67.5% Accuracy vs. 76.6% Winrate beim
+    aktuellen Modell) -- als Richtwert fuer Modell-Drift trotzdem aussagekraeftig, nur nicht 1:1
+    mit der Live-Winrate vergleichbar.
+
+    Returns: {} falls keine Config-Datei oder kein '_meta'-Block existiert.
+    """
+    config_path = os.path.join(CONFIGS_DIR, config_filename(symbol, reference_timeframe))
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+    return cfg.get('_meta', {})
 
 
 def _reference_period_start(ctime: pd.Timestamp, reference_tf: str) -> pd.Timestamp:
@@ -37,10 +63,22 @@ def _reference_period_start(ctime: pd.Timestamp, reference_tf: str) -> pd.Timest
 
 def fetch_recent_live_trades(exchange, symbol: str, reference_tf: str, since_ts: pd.Timestamp,
                               limit: int = 100) -> list:
-    """Holt geschlossene Live-Positionen seit `since_ts` und leitet je Trade die Referenzkerze ab.
+    """Holt geschlossene Live-Positionen, deren SCHLIESSUNG seit `since_ts` liegt, und leitet je
+    Trade die Referenzkerze ab.
+
+    Bugfix 2026-09-20 (Live-Beobachtung): urspruenglich wurde gegen `ctime` (Eroeffnungszeit)
+    gefiltert, nicht gegen `utime` (Schliesszeit). Bei diesem Barriere-Modell bleiben Positionen
+    haeufig laenger als 24h offen, bevor SL/TP greift -- eine Position, die vor >24h eroeffnet
+    wurde, aber INNERHALB der letzten 24h schloss, fiel dadurch systematisch durchs 24h-Fenster
+    des taeglichen Checks. Symptom live beobachtet: 7 echte Trade-Eroeffnungen ueber eine Woche
+    (aus dem "kein Stacking"-Verhalten zweifelsfrei mind. 6 zugehoerige Schliessungen), aber JEDER
+    einzelne taegliche Bericht meldete "keine geschlossenen Live-Trades". Fuer die Referenzkerzen-
+    Ableitung (welche Kerze die Entry-Entscheidung ausloeste) bleibt `ctime` weiterhin richtig --
+    nur der since_ts-Filter selbst betraf die Eroeffnungszeit, nicht die fuer diesen Bericht
+    eigentlich relevante Schliesszeit.
 
     Returns: Liste von Dicts {ctime, utime, ref_ts, direction, pnl, net_profit, open_price,
-    close_price}, chronologisch sortiert.
+    close_price}, chronologisch nach Schliesszeit sortiert.
     """
     positions = exchange.fetch_closed_positions(symbol, limit=limit)
     trades = []
@@ -48,13 +86,14 @@ def fetch_recent_live_trades(exchange, symbol: str, reference_tf: str, since_ts:
         info = p.get('info', {})
         try:
             ctime = pd.Timestamp(int(info['ctime']), unit='ms', tz='UTC')
+            utime = pd.Timestamp(int(info['utime']), unit='ms', tz='UTC')
         except (KeyError, ValueError, TypeError):
             continue
-        if ctime < since_ts:
+        if utime < since_ts:
             continue
         trades.append({
             'ctime': ctime,
-            'utime': pd.Timestamp(int(info['utime']), unit='ms', tz='UTC'),
+            'utime': utime,
             'ref_ts': _reference_period_start(ctime, reference_tf),
             'direction': 'long' if info.get('holdSide') == 'long' else 'short',
             'pnl': float(info.get('pnl', 0.0)),
@@ -62,7 +101,7 @@ def fetch_recent_live_trades(exchange, symbol: str, reference_tf: str, since_ts:
             'open_price': float(info.get('openAvgPrice', 0.0)),
             'close_price': float(info.get('closeAvgPrice', 0.0)),
         })
-    trades.sort(key=lambda t: t['ctime'])
+    trades.sort(key=lambda t: t['utime'])
     return trades
 
 
@@ -72,8 +111,9 @@ def build_signal_comparison(barrier_cfg: dict, predictor, exchange, artifacts_di
     deployte Modell zum damaligen Referenzzeitpunkt gesagt?
 
     Returns: dict mit 'since', 'generated_at', 'n_trades', 'n_comparable', 'n_match',
-    'n_mismatch', 'n_live_wins', 'n_live_losses', 'live_win_rate', 'trades' (Liste von Dicts,
-    inkl. Fehlerfall 'error' statt Modell-Feldern).
+    'n_mismatch', 'n_live_wins', 'n_live_losses', 'live_win_rate', 'backtest_oos_accuracy',
+    'backtest_walk_forward_mean' (beide None falls keine Strategie-Config-Meta vorhanden), 'trades'
+    (Liste von Dicts, inkl. Fehlerfall 'error' statt Modell-Feldern).
     """
     symbol = barrier_cfg['symbol']
     reference_tf = barrier_cfg['reference_timeframe']
@@ -94,7 +134,14 @@ def build_signal_comparison(barrier_cfg: dict, predictor, exchange, artifacts_di
     # Ein zu grosser Puffer bei einem KALTEN Cache-Neuaufbau (z.B. frische Maschine) kann bei sehr
     # groben Zeitebenen sogar eine Bitget-API-Grenze reissen (>90 Tage Zeitfenster pro Anfrage bei
     # '1w', gefunden 2026-09-12) -- deshalb bewusst zurueckhaltend dimensioniert.
-    span_minutes = max((now_utc - since_ts).total_seconds() / 60, 0) if live_trades else 0
+    #
+    # Bugfix 2026-09-20: die Spanne MUSS von der aeltesten tatsaechlich benoetigten `ref_ts`
+    # ausgehen, nicht von `since_ts` -- seit fetch_recent_live_trades() nach Schliesszeit
+    # (utime) statt Eroeffnungszeit (ctime) filtert (siehe dortiger Bugfix), kann eine lange offen
+    # gebliebene Position eine `ref_ts` weit VOR `since_ts` haben (Live-Fund: eine Position blieb
+    # >30h offen). Mit der alten, nur an since_ts orientierten Spanne waere der Cache fuer genau
+    # die Trades zu duenn geblieben, die dieser Bugfix erst sichtbar macht.
+    span_minutes = max((now_utc - min(t['ref_ts'] for t in live_trades)).total_seconds() / 60, 0) if live_trades else 0
     ref_min_candles = int(span_minutes / TIMEFRAME_MINUTES[reference_tf]) + MIN_CANDLES_BY_TF.get(reference_tf, 120)
     context_min_candles = {
         tf: int(span_minutes / TIMEFRAME_MINUTES[tf]) + MIN_CANDLES_BY_TF.get(tf, 120) for tf in context_tfs
@@ -129,6 +176,8 @@ def build_signal_comparison(barrier_cfg: dict, predictor, exchange, artifacts_di
     live_wins = sum(1 for t in live_trades if t['pnl'] > 0)
     live_losses = sum(1 for t in live_trades if t['pnl'] <= 0)
 
+    backtest_meta = _load_backtest_reference(symbol, reference_tf)
+
     return {
         'since': since_ts.isoformat(),
         'generated_at': now_utc.isoformat(),
@@ -139,6 +188,8 @@ def build_signal_comparison(barrier_cfg: dict, predictor, exchange, artifacts_di
         'n_live_wins': live_wins,
         'n_live_losses': live_losses,
         'live_win_rate': (live_wins / len(live_trades)) if live_trades else None,
+        'backtest_oos_accuracy': backtest_meta.get('confirmation_oos_accuracy'),
+        'backtest_walk_forward_mean': backtest_meta.get('walk_forward_mean'),
         'trades': rows,
     }
 
@@ -155,6 +206,10 @@ def format_telegram_report(report: dict, symbol: str) -> str:
         else f"Live-Trades: {n}",
         f"Signal-Abgleich mit aktuellem Modell: {report['n_match']}/{report['n_comparable']} Match",
     ]
+    oos_acc = report.get('backtest_oos_accuracy')
+    if oos_acc is not None:
+        lines.append(f"Modell-OOS-Genauigkeit (letztes Training): {oos_acc:.1%} "
+                      f"(Klassifikation, nicht 1:1 die Handels-Winrate)")
     if report['n_mismatch'] > 0:
         lines.append(f"⚠ {report['n_mismatch']} Mismatch -- Live-Richtung weicht vom aktuellen "
                       f"Modell fuer diese Referenzkerze ab (siehe Log fuer Details).")
