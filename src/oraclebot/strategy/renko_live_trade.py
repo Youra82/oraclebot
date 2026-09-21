@@ -8,18 +8,23 @@
 # Sicherheitsnetz: OHNE jede SL-Trigger-Order waere eine offene Position bei einem Ausfall
 # dieses Prozesses (Cron haengt, Server down, Bug) UNBEGRENZT lange ungeschuetzt offen -- anders
 # als bei der Barriere-Strategie, wo der Broker selbst SL/TP durchsetzt. Deshalb wird bei jedem
-# Entry zusaetzlich ein Sicherheits-Stop platziert (Default 1.5%, deutlich ausserhalb der im
+# Entry zusaetzlich ein Sicherheits-Stop platziert (Default 3.0%, deutlich ausserhalb der im
 # Backtest beobachteten Verlust-Groessenordnung von ~Brick-Groesse/0.4-0.45%) -- er soll im
 # Normalbetrieb NIE ausloesen, sondern nur einen Totalausfall abfangen.
 #
-# WICHTIG (Fund 2026-09-21): bei hohem Hebel (hier 40x) liquidiert Bitget selbst schon VOR einem
-# zu weit entfernten Sicherheits-Stop (echte Liquidationsdistanz ~ 1/Hebel - Wartungsmargin-Satz
-# - Gebuehr, bei 40x nur noch ~2.0-2.5%, siehe margin_safety.py-Formelstruktur) -- ein
-# urspruenglich hier verwendeter 5%-Stop haette NIE ausgeloest. safety_stop_pct MUSS also klar
-# UNTER der bei der gewaehlten `leverage` real zu erwartenden Liquidationsdistanz liegen, sonst
-# ist er reine Dekoration (die Order wird zwar platziert, aber Bitget liquidiert vorher). Bei
-# isoliertem Margin ist der Schaden dadurch trotzdem gedeckelt (max. die fuer den Trade
-# eingesetzte Margin), nur eben nicht ueber diesen Trigger, sondern ueber die Liquidation selbst.
+# WICHTIG (Fund 2026-09-21, zweifach korrigiert): bei hohem Hebel liquidiert Bitget selbst schon
+# VOR einem zu weit entfernten Sicherheits-Stop (echte Liquidationsdistanz ~ 1/Hebel -
+# Wartungsmargin-Satz - Gebuehr). ERSTER Fund: ein anfangs verwendeter 5%-Stop haette bei 40x nie
+# ausgeloest (Distanz nur ~2%). ZWEITER Fund: selbst bei angepasstem Stop war 40x Hebel an sich zu
+# hoch angesetzt -- die BTC-Wartungsmarge aus margin_safety.py (0.40%) galt NICHT fuer diese
+# Altcoins (Bitgets echte unterste Stufe: NEAR/DOT/ADA/AVAX/SUI 0.66%, SOL 0.50%, XRP 0.40%, per
+# publicMixGetV2MixMarketQueryPositionLever), damit lag die reale Liquidationsdistanz bei 40x nur
+# ~1.78-2.04% entfernt -- nur ~30% Puffer zum schlechtesten je in 2544 historischen Trades
+# beobachteten Max-Adverse-Excursion-Wert (1.37%). Hebel deshalb auf 20x reduziert (Distanz
+# 4.28-4.54%, ~3x Puffer zum historischen Worst Case). safety_stop_pct MUSS klar UNTER der bei
+# der gewaehlten `leverage` real zu erwartenden (symbolspezifischen!) Liquidationsdistanz liegen,
+# sonst ist er reine Dekoration. Bei isoliertem Margin ist der Schaden so oder so gedeckelt (max.
+# die fuer den Trade eingesetzte Margin), nur eben ueber die Liquidation statt ueber den Trigger.
 import logging
 import os
 
