@@ -39,4 +39,3 @@ echo "7. Aktualisiere Python-Pakete..."
 .venv/bin/pip install -r requirements.txt --quiet
 
 echo "Update erfolgreich abgeschlossen. oraclebot ist jetzt auf dem neuesten Stand."
-echo "(artifacts/datasets/barrier_model_*.pkl ist git-getrackt und wurde mit aktualisiert -- kein Neu-Training auf dem VPS noetig.)"

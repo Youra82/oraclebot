@@ -16,33 +16,10 @@ daten/
 artifacts/charts/
 
 # Grosse Trainingsdaten/Caches (100MB+ pro Datei) -- nicht fuer Git geeignet.
-# barrier_model_*.pkl bleibt getrackt (klein, ~120KB, fuer VPS-Inferenz noetig -- kein
-# Neu-Training auf dem VPS erforderlich).
 artifacts/datasets/*.jsonl
 artifacts/datasets/ohlcv_*.pkl
 artifacts/datasets/renko_ohlcv_*.pkl
 
-# Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant.
-artifacts/datasets/barrier_diagnostics_*.json
-
-# Exploratives Rohmaterial fuer verworfene externe-Datenquellen-Tests (2026-07-10: Funding
-# Rate, DXY, Fear&Greed -- keiner zeigte einen robusten Effekt, siehe Commit-Historie fuer die
-# Begruendung). Nicht Teil der Produktions-Pipeline, jederzeit neu abrufbar bei Bedarf.
-artifacts/datasets/binance_funding_btc.pkl
-artifacts/datasets/dxy_index.pkl
-artifacts/datasets/fear_greed_index.pkl
-
-# Weitere verworfene externe-Datenquellen-Tests (2026-07-13: Binance-Orderflow-Metriken,
-# On-Chain-Metriken, GDELT-News-Sentiment -- keiner zeigte einen robusten Effekt).
-artifacts/datasets/binance_futures_metrics_BTC_daily.csv
-artifacts/datasets/onchain_metrics_BTC_daily.csv
-artifacts/datasets/gdelt_bitcoin_tone_daily.csv
-
-# Ephemerer Perioden-Marker gegen Telegram-Doppelversand (siehe predict_next_barrier.py):
-# haelt fest, fuer welche 4h-Periode die Prognose schon gesendet wurde.
-artifacts/datasets/last_barrier_run.txt
-# Dasselbe fuer den taeglichen Live-Signal-Check (analysis/live_signal_check.py).
-artifacts/datasets/last_signal_check_run.txt
 # Dasselbe fuer den taeglichen Renko-Konsistenzcheck (analysis/renko_live_signal_check.py).
 artifacts/datasets/last_renko_signal_check_run.txt
 

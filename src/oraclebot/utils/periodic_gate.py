@@ -1,15 +1,16 @@
-# src/oraclebot/utils/barrier_gate.py
-# Wie daily_gate.py, aber fuer die 4h-Kadenz des Barriere-Modells: statt einmal pro Tag um
-# Mitternacht soll predict_next_barrier.py bei JEDER 4h-Grenze (00/04/08/12/16/20 UTC) laufen.
+# src/oraclebot/utils/periodic_gate.py
+# Generisches Zeitfenster+Marker-Gate fuer periodische Cron-Skripte (urspruenglich fuer die
+# 4h-Kadenz der Barriere-Strategie gebaut, inzwischen barrier-unabhaengig -- wird auch von
+# run_renko_breakout.py fuer den taeglichen 24h-Konsistenzcheck genutzt).
 import os
 
 import pandas as pd
 
 
-def check_barrier_gate(now_utc: pd.Timestamp, marker_path: str, period_hours: int = 4):
-    """Prueft Zeitfenster + Perioden-Marker (analog zu daily_gate.check_daily_gate, nur fuer
-    4h- statt Tages-Perioden). Zeitfenster ist die ersten 30 Minuten jeder `period_hours`-Grenze,
-    Dedup ueber einen Marker mit dem ISO-Zeitstempel der aktuellen Periode (nicht nur dem Datum).
+def check_periodic_gate(now_utc: pd.Timestamp, marker_path: str, period_hours: int = 4):
+    """Prueft Zeitfenster + Perioden-Marker. Zeitfenster ist die ersten 30 Minuten jeder
+    `period_hours`-Grenze, Dedup ueber einen Marker mit dem ISO-Zeitstempel der aktuellen
+    Periode (nicht nur dem Datum).
 
     Returns:
         (should_run, skip_reason): `skip_reason` ist None wenn should_run True ist.
@@ -34,8 +35,8 @@ def check_barrier_gate(now_utc: pd.Timestamp, marker_path: str, period_hours: in
     return True, None
 
 
-def mark_barrier_run_complete(now_utc: pd.Timestamp, marker_path: str, period_hours: int = 4) -> None:
-    """Traegt die aktuelle 4h-Periode als 'bereits verarbeitet' ein."""
+def mark_periodic_run_complete(now_utc: pd.Timestamp, marker_path: str, period_hours: int = 4) -> None:
+    """Traegt die aktuelle Periode als 'bereits verarbeitet' ein."""
     period_start = now_utc.floor(f'{period_hours}h')
     with open(marker_path, 'w', encoding='utf-8') as f:
         f.write(period_start.isoformat())

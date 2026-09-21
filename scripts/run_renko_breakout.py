@@ -25,7 +25,7 @@ import pandas as pd
 from oraclebot.strategy.renko_portfolio_state import (detect_exit, detect_fresh_entry, load_state,
                                                         save_state, update_symbol_bricks)
 from oraclebot.strategy.renko_live_trade import close_renko_position, open_renko_position, resolve_am_outcome
-from oraclebot.utils.barrier_gate import check_barrier_gate, mark_barrier_run_complete
+from oraclebot.utils.periodic_gate import check_periodic_gate, mark_periodic_run_complete
 from oraclebot.utils.config import load_settings
 from oraclebot.utils.data_fetch import fetch_all_timeframes, fetch_ohlcv_incremental
 from oraclebot.utils.telegram import send_message
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     # eigenes 24h-Gate, eigener Marker, eigenes try/except, damit ein Fehler hier niemals das
     # eigentliche Live-Trading dieses Laufs blockiert).
     daily_check_marker = os.path.join(DATASETS_DIR, 'last_renko_signal_check_run.txt')
-    should_run_daily_check, _ = check_barrier_gate(now_utc, daily_check_marker, period_hours=24)
+    should_run_daily_check, _ = check_periodic_gate(now_utc, daily_check_marker, period_hours=24)
     if should_run_daily_check:
         try:
             from oraclebot.analysis.renko_live_signal_check import (check_brick_chain_consistency,
@@ -198,7 +198,7 @@ if __name__ == '__main__':
         except Exception as e:
             logger.error(f"Renko-Konsistenzcheck fehlgeschlagen (Live-Trading laeuft trotzdem weiter): {e}",
                          exc_info=True)
-        mark_barrier_run_complete(now_utc, daily_check_marker, period_hours=24)
+        mark_periodic_run_complete(now_utc, daily_check_marker, period_hours=24)
 
     portfolio_state = reconcile_portfolio_state(exchange, symbols, portfolio_state, telegram_cfg,
                                                  AM_STATE_PATH, am_base_pct, am_growth, am_streak)
