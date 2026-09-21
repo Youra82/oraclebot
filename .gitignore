@@ -20,6 +20,7 @@ artifacts/charts/
 # Neu-Training auf dem VPS erforderlich).
 artifacts/datasets/*.jsonl
 artifacts/datasets/ohlcv_*.pkl
+artifacts/datasets/renko_ohlcv_*.pkl
 
 # Ephemer -- wird bei jedem Trainingslauf neu geschrieben, nur fuer Live-Diagnose relevant.
 artifacts/datasets/barrier_diagnostics_*.json
@@ -42,6 +43,8 @@ artifacts/datasets/gdelt_bitcoin_tone_daily.csv
 artifacts/datasets/last_barrier_run.txt
 # Dasselbe fuer den taeglichen Live-Signal-Check (analysis/live_signal_check.py).
 artifacts/datasets/last_signal_check_run.txt
+# Dasselbe fuer den taeglichen Renko-Konsistenzcheck (analysis/renko_live_signal_check.py).
+artifacts/datasets/last_renko_signal_check_run.txt
 
 # Live-Zustand der Anti-Martingale-Positionsgroesse (siehe anti_martingale.py) -- rein
 # runtime-generiert, pro Account unterschiedlich, nicht fuer Git geeignet.
