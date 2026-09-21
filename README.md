@@ -674,47 +674,55 @@ nötig.
 
 ---
 
-## VPS-Deployment: Renko-Breakout-Strategie (optional, zusätzlich)
+## VPS-Deployment: Renko-Breakout-Strategie (aktiv, zusätzlich zur Barriere-Strategie)
 
 Portfolio-weite Renko-Breakout-Strategie (2026-09-21, siehe `strategy/horizontal_breakout_signal.py`
 + `strategy/renko_portfolio_state.py`) — läuft **unabhängig** von der 4h-Barriere-Strategie oben,
-aber auf demselben Bitget-Account (`secret.json::oraclebot`). Standardmäßig über
-`renko_breakout_settings.enabled: false` **deaktiviert** (kompletter Kill-Switch, analog zum
-dnabot-Muster) — dieser Abschnitt bereitet nur den Deployment-Weg vor, aktiviert aber nichts.
+aber auf demselben Bitget-Account (`secret.json::oraclebot`, **geteiltes Guthaben**). Sieben Coins
+(NEAR/DOT/SOL/ADA/AVAX/SUI/XRP), Bricks aus 5m-Kerzen, Entry beim Ausbruch aus einer
+Seitwärtsphase, Exit beim ersten vollständig ausgebildeten Gegen-Brick (kein festes TP). Nur EINE
+offene Position gleichzeitig über das ganze Portfolio (erstes Signal gewinnt, Rest wird verworfen,
+nicht nachgeholt). `renko_breakout_settings.enabled: true` — seit 2026-09-21 scharf.
 
-#### 1. Cronjob einrichten (alle 5 Minuten, Brick-Timeframe)
+**Aktuelle Kalibrierung** (siehe `_note`-Felder in `settings.json::renko_breakout_settings` für die
+volle Herleitung):
+- Hebel **20x** (nicht mehr 40x — die erste Kalibrierung nutzte faelschlich BTCs Wartungsmarge
+  statt der echten, hoeheren Altcoin-Saetze; bei 40x waere die reale Liquidationsdistanz nur
+  ~1.78-2.04% gewesen, zu nah am historisch schlechtesten beobachteten Kursausschlag von 1.37%)
+- Sicherheits-Stop **3%** (Backstop bei Prozessausfall, kein reguläres Exit-Mittel)
+- Einsatz-Basis (Anti-Martingale) **2.0%** vom Guthaben, wächst bei Gewinnserien
+- `base_pct_brick` **pro Coin kalibriert** (nicht mehr einheitlich 0.2%) — gleicht die
+  unterschiedliche Grundvolatilität der 7 Coins aus, damit keiner die Portfolio-Arbitrierung
+  strukturell dominiert (Details/Grenzen dieser Kalibrierung ebenfalls in der `_note`)
+
+#### Cronjob (alle 5 Minuten, Brick-Timeframe)
 
 ```cron
 */5 * * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot_renko.lock /bin/sh -c "sleep 20; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/run_renko_breakout.py >> /pfad/zu/oraclebot/logs/cron_renko.log 2>&1"
 ```
 
 Eigene Lock-Datei (`oraclebot_renko.lock`) und eigenes Log (`cron_renko.log`), damit sich dieser
-Cron nicht mit dem Barriere-Cron (`oraclebot.lock`/`cron.log`) blockiert oder vermischt. Solange
-`enabled: false` ist, beendet sich das Skript sofort ohne Seiteneffekte (kein Fetch, keine Order).
+Cron nicht mit dem Barriere-Cron (`oraclebot.lock`/`cron.log`) blockiert oder vermischt.
 
-#### 2. Setup verifizieren (ohne echtes Geld zu riskieren)
+#### Setup verifizieren / überwachen
 
 ```bash
 .venv/bin/python3 -m pytest tests/ -k renko          # nur die Renko-Tests
-.venv/bin/python3 scripts/run_renko_breakout.py       # sollte sofort "enabled=false" loggen und beenden
-.venv/bin/python3 scripts/run_renko_breakout.py --dry-run   # nur mit enabled=true testen (siehe unten) -- baut Brick-Ketten + loggt Signale, platziert aber KEINE Orders
+.venv/bin/python3 scripts/run_renko_breakout.py --dry-run   # Brick-Ketten fortsetzen + Signale loggen, KEINE Orders
+tail -f logs/cron_renko.log                          # live mitverfolgen
 ```
 
-#### 3. Aktivierungs-Checkliste (bewusst manuell, kein Auto-Aktivieren)
+#### Strategie pausieren (Kill-Switch)
 
-1. `secret.json::oraclebot` prüfen — dieselben API-Keys wie die Barriere-Strategie, also
-   **geteiltes Guthaben**: sicherstellen, dass genug freie Marge für BEIDE Strategien gleichzeitig
-   da ist (die Barriere-Strategie tradet BTC, Renko tradet NEAR/DOT/SOL/ADA/AVAX/SUI/XRP — kein
-   Symbol-Konflikt, aber ein gemeinsamer Guthaben-Pool).
-2. `settings.json::renko_breakout_settings.anti_martingale_base_pct` prüfen (aktuell `2.0`, vom
-   User am 2026-09-21 bewusst als aggressivster von drei getesteten Kandidaten gewählt — siehe
-   `_note` im selben Block für die OOS-Realismus-Zahlen dazu).
-3. Cronjob oben einrichten, `--dry-run` mindestens einen vollen Tag laufen lassen und
-   `logs/cron_renko.log` auf saubere Brick-Signale ohne Fehler prüfen.
-4. Erst dann `renko_breakout_settings.enabled` auf `true` setzen und pushen/`update.sh` auf dem VPS.
-5. Danach: täglicher Live-vs-Backtest-Konsistenzcheck läuft automatisch im selben Cron mit
-   (`analysis/renko_live_signal_check.py`, wie beim Barriere-Signalvergleich oben) — meldet sich
-   per Telegram bei einer Abweichung zwischen Live-Brick-Kette und frischem Neuaufbau.
+`renko_breakout_settings.enabled` in `settings.json` auf `false` setzen, committen, pushen, auf
+dem VPS `./update.sh` laufen lassen — der Cron beendet sich dann bei jedem Tick sofort ohne
+Seiteneffekte (kein Fetch, keine Order). Eine bereits offene Position wird dadurch NICHT
+automatisch geschlossen (der Kill-Switch verhindert nur neue Runs) — ggf. manuell auf Bitget
+schließen.
+
+Täglicher Live-vs-Backtest-Konsistenzcheck läuft automatisch im selben Cron mit
+(`analysis/renko_live_signal_check.py`, wie beim Barriere-Signalvergleich oben) — meldet sich
+per Telegram bei einer Abweichung zwischen Live-Brick-Kette und frischem Neuaufbau.
 
 ---
 
