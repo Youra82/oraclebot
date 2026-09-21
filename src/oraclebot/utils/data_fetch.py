@@ -11,7 +11,7 @@ from oraclebot.utils.progress import finish_progress, render_progress
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15}
+TIMEFRAME_MINUTES = {'1M': 30 * 24 * 60, '1w': 7 * 24 * 60, '1d': 24 * 60, '4h': 4 * 60, '1h': 60, '15m': 15, '5m': 5}
 
 
 def _probe_next_available_ts(exchange, symbol: str, timeframe: str, from_ts: int, upper_bound_ts: int,

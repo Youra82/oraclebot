@@ -674,6 +674,50 @@ nötig.
 
 ---
 
+## VPS-Deployment: Renko-Breakout-Strategie (optional, zusätzlich)
+
+Portfolio-weite Renko-Breakout-Strategie (2026-09-21, siehe `strategy/horizontal_breakout_signal.py`
++ `strategy/renko_portfolio_state.py`) — läuft **unabhängig** von der 4h-Barriere-Strategie oben,
+aber auf demselben Bitget-Account (`secret.json::oraclebot`). Standardmäßig über
+`renko_breakout_settings.enabled: false` **deaktiviert** (kompletter Kill-Switch, analog zum
+dnabot-Muster) — dieser Abschnitt bereitet nur den Deployment-Weg vor, aktiviert aber nichts.
+
+#### 1. Cronjob einrichten (alle 5 Minuten, Brick-Timeframe)
+
+```cron
+*/5 * * * * /usr/bin/flock -n /pfad/zu/oraclebot/oraclebot_renko.lock /bin/sh -c "sleep 20; OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /pfad/zu/oraclebot && /pfad/zu/oraclebot/.venv/bin/python3 scripts/run_renko_breakout.py >> /pfad/zu/oraclebot/logs/cron_renko.log 2>&1"
+```
+
+Eigene Lock-Datei (`oraclebot_renko.lock`) und eigenes Log (`cron_renko.log`), damit sich dieser
+Cron nicht mit dem Barriere-Cron (`oraclebot.lock`/`cron.log`) blockiert oder vermischt. Solange
+`enabled: false` ist, beendet sich das Skript sofort ohne Seiteneffekte (kein Fetch, keine Order).
+
+#### 2. Setup verifizieren (ohne echtes Geld zu riskieren)
+
+```bash
+.venv/bin/python3 -m pytest tests/ -k renko          # nur die Renko-Tests
+.venv/bin/python3 scripts/run_renko_breakout.py       # sollte sofort "enabled=false" loggen und beenden
+.venv/bin/python3 scripts/run_renko_breakout.py --dry-run   # nur mit enabled=true testen (siehe unten) -- baut Brick-Ketten + loggt Signale, platziert aber KEINE Orders
+```
+
+#### 3. Aktivierungs-Checkliste (bewusst manuell, kein Auto-Aktivieren)
+
+1. `secret.json::oraclebot` prüfen — dieselben API-Keys wie die Barriere-Strategie, also
+   **geteiltes Guthaben**: sicherstellen, dass genug freie Marge für BEIDE Strategien gleichzeitig
+   da ist (die Barriere-Strategie tradet BTC, Renko tradet NEAR/DOT/SOL/ADA/AVAX/SUI/XRP — kein
+   Symbol-Konflikt, aber ein gemeinsamer Guthaben-Pool).
+2. `settings.json::renko_breakout_settings.anti_martingale_base_pct` prüfen (aktuell `2.0`, vom
+   User am 2026-09-21 bewusst als aggressivster von drei getesteten Kandidaten gewählt — siehe
+   `_note` im selben Block für die OOS-Realismus-Zahlen dazu).
+3. Cronjob oben einrichten, `--dry-run` mindestens einen vollen Tag laufen lassen und
+   `logs/cron_renko.log` auf saubere Brick-Signale ohne Fehler prüfen.
+4. Erst dann `renko_breakout_settings.enabled` auf `true` setzen und pushen/`update.sh` auf dem VPS.
+5. Danach: täglicher Live-vs-Backtest-Konsistenzcheck läuft automatisch im selben Cron mit
+   (`analysis/renko_live_signal_check.py`, wie beim Barriere-Signalvergleich oben) — meldet sich
+   per Telegram bei einer Abweichung zwischen Live-Brick-Kette und frischem Neuaufbau.
+
+---
+
 ## Tägliche Verwaltung & wichtige Befehle
 
 ```bash
@@ -683,6 +727,8 @@ grep -i "ERROR" logs/cron.log                                       # Nach Fehle
 crontab -l                                                          # Aktuellen Cronjob anzeigen
 cd ~/oraclebot && .venv/bin/python3 scripts/predict_next_barrier.py --force   # Manueller Testlauf
 cat src/oraclebot/strategy/configs/config_BTC_USDT_USDT_4h.json     # Aktive Strategie-Config ansehen (min_confidence/model_max_depth/Anti-Martingale)
+tail -f logs/cron_renko.log                                         # Renko-Breakout-Strategie live mitverfolgen (falls aktiviert)
+cat artifacts/state/renko_breakout_portfolio.json                   # Aktuell offene Renko-Position (falls vorhanden)
 PYTHONPATH=src python -m pytest tests/                              # Tests ausfuehren
 ./update.sh                                                         # Bot aktualisieren
 ./show_results.sh                                                   # Ergebnisse/Chart/Excel (nur lokal, nicht auf dem VPS)
