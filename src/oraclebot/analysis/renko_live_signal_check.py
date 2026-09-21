@@ -92,9 +92,10 @@ def check_recent_trades_against_backtest(symbol: str, exchange, cfg: dict, since
     if not recent:
         return {'symbol': symbol, 'n_live_trades': 0, 'n_match': 0, 'n_comparable': 0}
 
+    base_pct = cfg.get('base_pct_brick_by_symbol', {}).get(symbol, 0.002)
     df = fetch_ohlcv(symbol, cfg.get('brick_timeframe', '5m'), limit=lookback_days * 24 * 60 // 5)
-    bricks = build_ear_bricks(df, base_pct=cfg.get('base_pct_brick', 0.002),
-                               k_entropy=cfg.get('k_entropy', 0.7), h_window=cfg.get('h_window', 15))
+    bricks = build_ear_bricks(df, base_pct=base_pct, k_entropy=cfg.get('k_entropy', 0.7),
+                               h_window=cfg.get('h_window', 15))
     backtest_trades = backtest_horizontal_breakout(bricks, cfg.get('horizontal_lookback', 6),
                                                     cfg.get('breakout_run', 2))
 

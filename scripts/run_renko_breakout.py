@@ -132,7 +132,8 @@ if __name__ == '__main__':
 
     symbols = cfg.get('symbols', [])
     brick_tf = cfg.get('brick_timeframe', '5m')
-    base_pct_brick = cfg.get('base_pct_brick', 0.002)
+    base_pct_brick_by_symbol = {k: v for k, v in cfg.get('base_pct_brick_by_symbol', {}).items()
+                                 if k != '_note'}
     k_entropy = cfg.get('k_entropy', 0.7)
     h_window = cfg.get('h_window', 15)
     horizontal_lookback = cfg.get('horizontal_lookback', 6)
@@ -170,8 +171,8 @@ if __name__ == '__main__':
             consistency_lines = []
             for symbol in symbols:
                 sym_state = brick_state.get(symbol, {})
-                res = check_brick_chain_consistency(symbol, sym_state, base_pct_brick, k_entropy,
-                                                     h_window, brick_tf)
+                res = check_brick_chain_consistency(symbol, sym_state, base_pct_brick_by_symbol[symbol],
+                                                     k_entropy, h_window, brick_tf)
                 if res.get('match') is False:
                     consistency_lines.append(f"ABWEICHUNG {symbol}: {len(res.get('mismatches', []))} "
                                               f"Bricks weichen ab (max {res.get('max_close_diff_pct', 0):.4f}%)")
@@ -222,7 +223,7 @@ if __name__ == '__main__':
         if new_candles.empty:
             continue
 
-        sym_state, fresh_bricks = update_symbol_bricks(sym_state, new_candles, base_pct_brick,
+        sym_state, fresh_bricks = update_symbol_bricks(sym_state, new_candles, base_pct_brick_by_symbol[symbol],
                                                          k_entropy, h_window)
         brick_state[symbol] = sym_state
         n_fresh = len(fresh_bricks)

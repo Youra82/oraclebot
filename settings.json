@@ -50,7 +50,12 @@
         "symbols": ["NEAR/USDT:USDT", "DOT/USDT:USDT", "SOL/USDT:USDT", "ADA/USDT:USDT",
                     "AVAX/USDT:USDT", "SUI/USDT:USDT", "XRP/USDT:USDT"],
         "brick_timeframe": "5m",
-        "base_pct_brick": 0.002,
+        "base_pct_brick_by_symbol": {
+            "_note": "Am 2026-09-21 PER COIN kalibriert (Bisektion NUR auf In-Sample, Ziel: 65 Bricks/Tag je Coin -- vorher war base_pct_brick=0.002 fuer alle Coins gleich, wodurch NEAR ~2.75x so oft Bricks bildete wie XRP und die Portfolio-Arbitrierung ('ein Slot, erstes Signal gewinnt') dadurch stark NEAR-lastig war). Kandidaten-Signalrate ist dadurch jetzt ausgeglichen (IS: 1176-1322, vorher deutlich weiter auseinander). WICHTIG: die tatsaechlich ARBITRIERTE Trade-Verteilung bleibt trotzdem schief (NEAR ~34%, XRP ~6% im OOS-Test) -- das liegt an korrelierten, marktweiten Vola-Schueben (NEAR reagiert dabei am schnellsten), nicht an der Brick-Rate, und ist NICHT durch weitere Brick-Kalibrierung loesbar, sondern nur durch eine andere Arbitrierungs-Regel (noch nicht umgesetzt/validiert).",
+            "NEAR/USDT:USDT": 0.00278, "DOT/USDT:USDT": 0.00212, "SOL/USDT:USDT": 0.00158,
+            "ADA/USDT:USDT": 0.00188, "AVAX/USDT:USDT": 0.00182, "SUI/USDT:USDT": 0.00207,
+            "XRP/USDT:USDT": 0.00138
+        },
         "k_entropy": 0.7,
         "h_window": 15,
         "horizontal_lookback": 6,
