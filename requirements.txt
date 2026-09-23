@@ -19,3 +19,7 @@ pytest
 # auf einer frischen Installation (z.B. VPS) mit "ModuleNotFoundError" ab.
 plotly>=6.0.0
 openpyxl>=3.1.0
+
+# Echtzeit-Ausfuehrung (scripts/run_renko_realtime.py) -- roher WebSocket-Client fuer Bitgets
+# oeffentlichen Trade-Kanal, da ccxt.pro nicht installiert/lizenziert ist.
+websockets>=13.0
