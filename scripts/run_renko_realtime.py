@@ -243,6 +243,21 @@ async def run(dry_run: bool = False):
 
         if now - last_enabled_check > ENABLED_RECHECK_INTERVAL_SECONDS:
             last_enabled_check = now
+
+            # Periodischer Abgleich gegen die echten Boersen-Positionen -- NICHT nur einmal beim
+            # Start (Fund 2026-09-23: eine manuelle Positions-Schliessung durch den User waehrend
+            # eines laufenden Prozesses blieb sonst bis zum naechsten Exit-Signal unbemerkt, der
+            # Prozess haette faelschlich weiter auf ein Signal fuer eine gar nicht mehr
+            # existierende Position gewartet, statt neue Entries zu suchen).
+            if not dry_run:
+                try:
+                    portfolio_state = await loop.run_in_executor(
+                        None, reconcile_portfolio_state, exchange, symbols, portfolio_state,
+                        telegram_cfg, AM_STATE_PATH, am_base_pct, am_growth, am_streak)
+                    save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
+                except Exception as e:
+                    logger.error(f"Renko-Realtime: periodischer Reconcile fehlgeschlagen: {e}")
+
             try:
                 fresh_settings = load_settings()
                 still_enabled = fresh_settings.get('renko_breakout_settings', {}).get('enabled', False)
