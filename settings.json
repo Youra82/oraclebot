@@ -1,7 +1,7 @@
 {
     "renko_breakout_settings": {
         "_note": "Portfolio-weite Renko-Breakout-Strategie (2026-09-21, siehe strategy/horizontal_breakout_signal.py). Am 2026-09-21 vom User scharf gestellt (enabled=true). anti_martingale_base_pct=2.0% ist die vom User bewusst gewaehlte (aggressivste der 3 getesteten Kandidaten: 0.5/1.0/2.0%) Einsatz-Basis. leverage=20 (NICHT mehr 40x, Fund 2026-09-21): erster 40x-Wert war NUR gegen die BTC-Wartungsmarge aus margin_safety.py kalibriert, nicht gegen die ECHTEN, symbolspezifischen Bitget-Saetze (NEAR/DOT/ADA/AVAX/SUI: 0.66%, SOL: 0.50%, XRP: 0.40%, per publicMixGetV2MixMarketQueryPositionLever abgefragt) -- damit lag die reale Liquidationsdistanz bei 40x nur bei ~1.78-2.04%, waehrend der schlechteste je in 2544 historischen Trades (200 Tage, 7 Coins) beobachtete Max-Adverse-Excursion-Wert bei 1.37% lag (P99: 0.85%, Median: 0.23%) -- nur ~30% Sicherheitspuffer, zu knapp. Bei 20x liegt die Liquidationsdistanz bei 4.28-4.54% -- gut das 3-fache des historischen Worst Case. OOS-Realismus-Test bei 20x (Taker-Fee+Slippage+echtes Funding+Liquidationspruefung anhand echter 5m-High/Low-Kerzen, 790 OOS-Trades): Endkapital ~522 (Start=100), MaxDD ~2.2%, 0 Liquidationen im gesamten Backtest-Zeitraum (auch bei 40x waeren es 0 gewesen -- der Fix ist ueber Sicherheitspuffer, nicht rueckwirkende Schadensbegrenzung).",
-        "enabled": true,
+        "enabled": false,
         "symbols": ["NEAR/USDT:USDT", "DOT/USDT:USDT", "SOL/USDT:USDT", "ADA/USDT:USDT",
                     "AVAX/USDT:USDT", "SUI/USDT:USDT", "XRP/USDT:USDT"],
         "brick_timeframe": "5m",
