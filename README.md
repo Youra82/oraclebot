@@ -115,7 +115,7 @@ src/oraclebot/
 │   └── renko_chart.py                 Interaktive Brick-Chart-Illustration (Plotly)
 └── utils/
     ├── bitget_ws.py                   Roher WebSocket-Client für Bitgets öffentlichen Trade-Kanal
-    ├── realtime_bars.py               Aggregiert Trade-Ticks zu 5-Sekunden-OHLCV-Bars
+    ├── realtime_bars.py               Aggregiert Trade-Ticks zu OHLCV-Bars (Groesse = brick_timeframe, 5m)
     ├── exchange.py                    Bitget-Wrapper (ccxt)
     ├── data_fetch.py                  OHLCV-Fetch inkl. Live-Cache (nur noch für Cold-Start-Warmup)
     ├── periodic_gate.py               Zeitfenster+Marker-Gate (für den alten täglichen Konsistenzcheck)
@@ -132,7 +132,7 @@ geändert.
 
 ```mermaid
 flowchart LR
-    A(["🌐 Bitget WebSocket<br/>Trade-Ticks"]):::io --> B["⏱️ 5s Bar-Aggregator<br/>realtime_bars.py"]:::proc
+    A(["🌐 Bitget WebSocket<br/>Trade-Ticks"]):::io --> B["⏱️ 5m Bar-Aggregator<br/>realtime_bars.py"]:::proc
     B --> C["🧱 EAR-Brick-Builder<br/>ear_bricks.py"]:::proc
     C --> D{"📈 Breakout-<br/>Signal?"}:::decision
     D -- "nein, weiter sammeln" --> C
@@ -217,17 +217,39 @@ Prozess (`scripts/run_renko_realtime.py`):
 
 - `utils/bitget_ws.py` verbindet sich direkt mit Bitgets öffentlichem Trade-Kanal
   (`wss://ws.bitget.com/v2/ws/public`) und empfängt echte Trade-Ticks in Echtzeit.
-- `utils/realtime_bars.py` aggregiert diese Ticks zu 5-Sekunden-Bars.
-- Diese 5-Sekunden-Bars füttern dieselbe, unveränderte Brick-/Signal-/Order-Logik — nur der Takt
-  ist jetzt Sekunden statt 5 Minuten.
+- `utils/realtime_bars.py` aggregiert diese Ticks zu Bars — **exakt `brick_timeframe` groß
+  (5 Minuten), nicht feiner** (siehe Zwischenfall unten). Die Brick-Engine bekommt dieselbe
+  Eingabe-Granularität wie der Backtest, nur der Moment des Reagierens ändert sich.
 - Ein Live-Test mit echtem Geld (2026-09-23) bestätigte die Reaktionszeit direkt: das erste
   Entry-Signal kam 6 Sekunden nach dem WebSocket-Connect, mit einem Zeitstempel, der NICHT auf dem
   5-Minuten-Raster des alten Crons lag — der Beweis, dass die Echtzeit-Reaktion tatsächlich greift.
 
-**Ehrlich offene Unsicherheit:** selbst mit WebSocket bleibt eine Rest-Verzögerung von ~5–10
-Sekunden (Bar-Fenster + Netzwerk + Order-Ausführung). Ob die Klippe schon dort beginnt oder die
-Strategie das toleriert, lässt sich mit den vorhandenen 5-Minuten-Backtest-Daten nicht auflösen —
-das zeigt sich erst über echte Live-Ergebnisse über einen längeren Zeitraum.
+### Zwischenfall: die erste Version verfälschte die Strategie selbst (gefixt 2026-09-24)
+
+Die allererste Version dieses Fixes aggregierte den Tick-Strom zu **5-Sekunden**-Bars statt zu
+5-Minuten-Bars — in der Annahme, "feiner = genauer". Das war ein Fehler: `build_ear_bricks()`
+schaut nur auf den **Schlusskurs** jeder eingehenden Kerze (nie auf High/Low), und 60x mehr
+Schlusskurse pro Zeiteinheit lassen 60x mehr — überwiegend Rausch-getriebene — Bricks entstehen.
+Das ist keine schnellere Version derselben Strategie, sondern eine strukturell ANDERE, nie
+backgetestete Strategie.
+
+Ein 24-Stunden-Live-Vergleich (2026-09-24, 17 echte Trades) zeigte das Muster deutlich: fast
+doppelt so viele Trades wie eine frische 5-Minuten-Backtest-Rekonstruktion desselben Fensters
+(17 vs. 9), Winrate 29% statt ~67%. Ein direkter 5m-vs-1m-Granularitätstest (identische Parameter,
+nur die Eingabe-Auflösung geändert) bestätigte den Mechanismus unabhängig: schon bei nur 12x
+feinerer Abtastung stiegen Signalzahl und -rauschen spürbar.
+
+**Fix:** die Brick-Engine bekommt weiterhin ausschließlich echte, abgeschlossene 5-Minuten-Bars
+(auf ganze 5-Minuten-Fenster ausgerichtet, exakt wie echte Bitget-5m-Kerzen) — der WebSocket-
+Tick-Strom wird nur genutzt, um den Moment, in dem ein 5-Minuten-Fenster abschließt, in Sekunden
+statt Minuten zu erkennen. Die Signal**definition** bleibt identisch zum Backtest, nur die
+Reaktions**geschwindigkeit** auf ihr Eintreten ändert sich — genau das war von Anfang an der
+Plan, wurde in der ersten Umsetzung aber mit der Granularität der Brick-Bildung selbst vermischt.
+
+**Ehrlich offene Unsicherheit:** selbst mit dem Fix bleibt eine Rest-Verzögerung von wenigen
+Sekunden (Bar-Abschluss-Erkennung + Netzwerk + Order-Ausführung) gegenüber einem theoretischen
+0-Lag-Idealfall. Ob das noch relevant ist, zeigt sich erst über echte Live-Ergebnisse über einen
+längeren Zeitraum nach diesem Fix.
 
 ---
 
@@ -241,10 +263,12 @@ an der Nahtstelle) — getestet gegen einen kompletten Neuaufbau (`test_incremen
 
 Der alte tägliche Konsistenzcheck (`analysis/renko_live_signal_check.py`) verglich dazu regelmäßig
 einen frischen 5m-REST-Neuaufbau gegen den Live-Zustand. **Dieser Check läuft im aktuellen
-Echtzeit-Prozess absichtlich NICHT mehr mit** — ein Vergleich von 5-Sekunden-Echtzeit-Bricks gegen
-einen 5-Minuten-REST-Neuaufbau würde dauerhaft falsche Abweichungsalarme erzeugen, weil beide
-schlicht unterschiedliche Granularität haben. Die Absicherung gegen die zerobot-Fehlerklasse
-bleibt trotzdem bestehen, nur über einen Unit-Test statt einen Live-Check.
+Echtzeit-Prozess (noch) nicht automatisch mit.** Seit dem Granularitäts-Fix (siehe oben) baut
+der Echtzeit-Prozess Bricks aus derselben 5-Minuten-Größe wie der REST-Neuaufbau — der Check wäre
+jetzt technisch sinnvoll anwendbar (anders als bei der ursprünglichen 5-Sekunden-Variante), ist
+aber bewusst nicht verdrahtet: das war nicht Teil dieses Fixes und braucht eine eigene
+Entscheidung. Die Absicherung gegen die zerobot-Fehlerklasse bleibt bis dahin über einen Unit-Test
+bestehen (`test_incremental_batches_match_one_shot_build`).
 
 ---
 

@@ -1,20 +1,41 @@
 # scripts/run_renko_realtime.py
-# Echtzeit-Ausfuehrung der Renko-Breakout-Strategie (2026-09-23) -- ersetzt den 5-Minuten-Cron
-# (run_renko_breakout.py) durch einen dauerhaft laufenden Prozess, der per WebSocket auf echte
-# Trade-Ticks reagiert statt auf abgeschlossene 5m-Kerzen zu warten.
+# Echtzeit-Ausfuehrung der Renko-Breakout-Strategie (2026-09-23, Granularitaets-Fix 2026-09-24)
+# -- ersetzt den 5-Minuten-Cron (run_renko_breakout.py) durch einen dauerhaft laufenden Prozess,
+# der per WebSocket auf echte Trade-Ticks reagiert statt auf einen Cron-Tick zu warten, DABEI
+# ABER weiterhin Bricks aus 5-Minuten-Kerzenschluessen baut -- exakt wie der Backtest.
 #
 # Hintergrund (Fund 2026-09-23): ein Backtest-Sweep zeigte, dass die Strategie-Edge bei JEDER
 # Verzoegerung zwischen Ausbruchs-Signal und Order-Ausfuehrung schlagartig verschwindet (0 Min
 # Lag: +420% OOS: 1+ Min Lag: -142% OOS) -- die 5-Minuten-Cron-Architektur (die erst auf eine
-# ABGESCHLOSSENE Kerze wartet) verursacht real ~6.5 Minuten Verzoegerung und macht die Strategie
-# strukturell unrentabel, unabhaengig vom Cron-Takt. Dieses Skript reagiert stattdessen auf
-# Preisbewegungen INNERHALB von Sekunden nach dem tatsaechlichen Ausbruch.
+# ABGESCHLOSSENE Kerze wartet, dann bis zu 5 Min + Verarbeitungszeit bis zum naechsten Tick
+# braucht) verursacht real ~6.5 Minuten Verzoegerung und macht die Strategie strukturell
+# unrentabel, unabhaengig vom Cron-Takt.
+#
+# Korrigierter Fehler (Fund 2026-09-24, siehe project_oraclebot-Memory "Live-vs-Backtest-
+# Divergenz"): die urspruengliche erste Version dieses Skripts vermischte zwei unabhaengige
+# Dinge -- "schneller REAGIEREN" und "Bricks aus FEINEREN Kerzen bauen". Sie aggregierte den
+# Tick-Strom zu 5-SEKUNDEN-Bars und fuetterte DIE in die Brick-Engine -- das ist keine schnellere
+# Version derselben Strategie, sondern eine strukturell ANDERE, nie backgetestete Strategie:
+# build_ear_bricks() schaut nur auf den Schlusskurs jeder eingehenden Kerze (nie auf High/Low),
+# und 60x mehr Schlusskurse pro Zeiteinheit lassen 60x mehr (ueberwiegend Rausch-)Bricks
+# entstehen. Live-Validierung (2026-09-24, 17 Trades) zeigte genau dieses Muster: fast doppelt so
+# viele Trades wie eine 5m-Backtest-Rekonstruktion desselben Fensters, Winrate 29% statt ~67%.
+# Ein direkter 5m-vs-1m-Granularitaetstest bestaetigte den Mechanismus (mehr Bricks, mehr
+# Signale, sinkende Winrate schon bei nur 12x feinerer Abtastung).
+#
+# FIX: die Brick-Engine bekommt weiterhin AUSSCHLIESSLICH echte, abgeschlossene 5-Minuten-Bars
+# (aggregiert aus dem Tick-Strom, aber auf ganze 5-Minuten-Fenster ausgerichtet -- exakt wie
+# echte Bitget-5m-Kerzen) -- NICHT 5-Sekunden-Bars. Der Geschwindigkeitsvorteil bleibt trotzdem
+# vollstaendig erhalten: statt auf den naechsten Cron-Tick zu warten (bis zu 5 Min + Verarbeitung),
+# erkennt der WebSocket-Tick-Strom den Moment, in dem ein 5-Minuten-Fenster tatsaechlich
+# abschliesst, praktisch sofort (Sekunden statt Minuten) -- die SignalDEFINITION bleibt identisch
+# zum Backtest, nur die ReaktionsGESCHWINDIGKEIT auf ihr Eintreten aendert sich.
 #
 # Wiederverwendet die EXISTIERENDE, bereits getestete Brick-/Signal-/Order-Logik unveraendert
 # (ear_bricks.py, renko_portfolio_state.py, horizontal_breakout_signal.py, renko_live_trade.py)
-# -- nur die Datenquelle (WebSocket-Ticks statt REST-Poll auf 5m-Kerzen, aggregiert zu feinen
-# 5-Sekunden-Bars ueber utils/realtime_bars.py) und der Ausloese-Takt (kontinuierlich statt
-# alle 5 Minuten) aendern sich.
+# -- nur die Datenquelle (WebSocket-Ticks statt REST-Poll, aber weiterhin zu 5m-Bars aggregiert
+# ueber utils/realtime_bars.py) und der Ausloese-Takt (kontinuierlich statt alle 5 Minuten
+# gepollt) aendern sich.
 #
 # EIGENER Zustand (renko_realtime_*.json), getrennt vom Cron-basierten System
 # (renko_breakout_*.json) -- vermeidet jede Verwechslung/Vermischung zwischen beiden Ansaetzen
@@ -26,6 +47,8 @@ import logging
 import os
 import sys
 import time
+
+import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
@@ -47,7 +70,10 @@ PORTFOLIO_STATE_PATH = os.path.join(STATE_DIR, 'renko_realtime_portfolio.json')
 AM_STATE_PATH = os.path.join(STATE_DIR, 'renko_realtime_anti_martingale.json')
 DATASETS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'datasets')
 
-BAR_SECONDS = 5
+# MUSS mit settings.json::renko_breakout_settings.brick_timeframe uebereinstimmen -- die
+# Brick-Engine baut Bricks aus Bars GENAU dieser Groesse, exakt wie der Backtest (siehe
+# Moduldoc: der 2026-09-24-Fix). Kein Zufall, dass hier "5m" -> 300s steht, nicht 5s.
+_TIMEFRAME_SECONDS = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600}
 STATE_SAVE_INTERVAL_SECONDS = 30
 ENABLED_RECHECK_INTERVAL_SECONDS = 60
 
@@ -83,24 +109,22 @@ def save_state_atomic(path: str, state: dict) -> None:
 
 
 def seed_symbol_state(symbol: str, base_pct: float, k_entropy: float, h_window: int,
-                       history_days: int) -> dict:
-    """Baut den initialen Brick-Zustand aus regulaeren 5m-REST-Daten auf (wie der Cron-
-    Cold-Start) -- schnell startklar statt stundenlang auf organisch entstehende Echtzeit-Bricks
-    zu warten. `buffer_candles` bleibt bewusst LEER: die 5m-Kerzen-Entropie-Historie passt nicht
-    zur Granularitaet der kommenden 5s-Echtzeit-Bars, die Entropie-Glaettung baut sich stattdessen
-    organisch aus den ersten echten 5s-Bars neu auf (min_periods=1, daher kein Fehler, nur ein
-    kurzes, selbstkorrigierendes Einschwingen von wenigen Bars)."""
-    from oraclebot.data.ear_bricks import build_ear_bricks
-
-    ohlcv = fetch_all_timeframes(symbol, ['5m'], history_days, cache_dir=DATASETS_DIR, use_cache=True)
-    df = ohlcv['5m']
-    bricks = build_ear_bricks(df, base_pct=base_pct, k_entropy=k_entropy, h_window=h_window)
-    recent_bricks = [{'ts': b['ts'].isoformat(), 'direction': b['direction'], 'close': b['close']}
-                      for b in bricks[-60:]]
-    last_close = bricks[-1]['close'] if bricks else float(df['close'].iloc[-1])
-    last_direction = bricks[-1]['direction'] if bricks else None
-    return {'last_candle_ts': None, 'buffer_candles': [], 'last_brick_close': last_close,
-            'last_brick_direction': last_direction, 'recent_bricks': recent_bricks}
+                       history_days: int, brick_tf: str, now_utc: pd.Timestamp) -> dict:
+    """Baut den initialen Brick-Zustand IDENTISCH zum Cron-Cold-Start (scripts/run_renko_breakout.py)
+    auf: laedt `history_days` Tage `brick_tf`-REST-Historie, verwirft die noch nicht abgeschlossene
+    letzte Kerze, und verarbeitet den Rest durch dieselbe update_symbol_bricks()-Funktion, die
+    danach auch die live per WebSocket aggregierten Bars derselben Groesse verarbeitet (siehe
+    Moduldoc: Fix 2026-09-24). Weil beide Quellen jetzt dieselbe Granularitaet haben (anders als
+    die fruehere 5-Sekunden-Variante), kommt `buffer_candles` dabei korrekt befuellt zurueck --
+    die Entropie-Glaettung (H_roll) setzt sich nahtlos aus der REST-Historie fort, statt sich erst
+    aus den ersten Live-Bars neu einzuschwingen."""
+    ohlcv = fetch_all_timeframes(symbol, [brick_tf], history_days, cache_dir=DATASETS_DIR, use_cache=True)
+    df = ohlcv[brick_tf]
+    timeframe_minutes = _TIMEFRAME_SECONDS[brick_tf] // 60
+    closed_cutoff = now_utc - pd.Timedelta(minutes=timeframe_minutes)
+    closed_candles = df[df.index <= closed_cutoff]
+    sym_state, _ = update_symbol_bricks({}, closed_candles, base_pct, k_entropy, h_window)
+    return sym_state
 
 
 def reconcile_portfolio_state(exchange, symbols: list, portfolio_state: dict, telegram_cfg: dict,
@@ -153,6 +177,8 @@ async def run(dry_run: bool = False):
     am_growth = cfg.get('anti_martingale_growth_factor', 1.5)
     am_streak = cfg.get('anti_martingale_streak_target', 3)
     history_days_buffer = cfg.get('history_days_for_brick_buffer', 3)
+    brick_tf = cfg.get('brick_timeframe', '5m')
+    bar_seconds = _TIMEFRAME_SECONDS[brick_tf]
 
     secrets = load_secrets(os.path.join(PROJECT_ROOT, 'secret.json'))
     telegram_cfg = secrets.get('telegram', {})
@@ -171,25 +197,67 @@ async def run(dry_run: bool = False):
         None, reconcile_portfolio_state, exchange, symbols, portfolio_state, telegram_cfg,
         AM_STATE_PATH, am_base_pct, am_growth, am_streak)
 
+    now_utc = pd.Timestamp.now(tz='UTC')
     aggregators = {}
     for symbol in symbols:
         if symbol not in brick_state:
-            logger.info(f"Renko-Realtime: {symbol} -- Cold-Start, baue Anfangszustand aus {history_days_buffer} Tagen 5m-Historie...")
+            logger.info(f"Renko-Realtime: {symbol} -- Cold-Start, baue Anfangszustand aus {history_days_buffer} Tagen {brick_tf}-Historie...")
             brick_state[symbol] = await loop.run_in_executor(
                 None, seed_symbol_state, symbol, base_pct_by_symbol[symbol], k_entropy, h_window,
-                history_days_buffer)
-        aggregators[symbol] = BarAggregator(bar_seconds=BAR_SECONDS)
+                history_days_buffer, brick_tf, now_utc)
+        aggregators[symbol] = BarAggregator(bar_seconds=bar_seconds)
     save_state_atomic(BRICK_STATE_PATH, brick_state)
 
     mode_label = " [DRY-RUN, keine echten Orders]" if dry_run else ""
     send_message(telegram_cfg.get('bot_token'), telegram_cfg.get('chat_id'),
-                 f"oraclebot Renko-Realtime gestartet{mode_label} ({len(symbols)} Symbole, {BAR_SECONDS}s-Bars). "
+                 f"oraclebot Renko-Realtime gestartet{mode_label} ({len(symbols)} Symbole, "
+                 f"{brick_tf}-Bricks, Echtzeit-Reaktion). "
                  f"Aktiv: {portfolio_state.get('active_symbol') or '(keine Position)'}")
 
     last_state_save = time.monotonic()
     last_enabled_check = time.monotonic()
     soft_paused = False  # enabled=false erkannt, aber noch offene Position -- keine neuen
                           # Entries mehr, aber die aktive Position weiter bis zum Exit ueberwachen
+
+    async def handle_new_bars(symbol: str, new_candles) -> None:
+        """Verarbeitet neue, abgeschlossene Bars fuer EIN Symbol: Brick-Kette fortsetzen, Exit-
+        oder Entry-Signal pruefen, ggf. ausfuehren. Gemeinsame Logik fuer den normalen Tick-
+        getriebenen Pfad UND den periodischen Stale-Bar-Flush (still gewordene Symbole) weiter
+        unten -- beide muessen exakt gleich behandelt werden."""
+        nonlocal portfolio_state
+        sym_state, fresh_bricks = update_symbol_bricks(brick_state[symbol], new_candles,
+                                                         base_pct_by_symbol[symbol], k_entropy, h_window)
+        brick_state[symbol] = sym_state
+        n_fresh = len(fresh_bricks)
+        if n_fresh == 0:
+            return
+
+        if portfolio_state.get('active_symbol') == symbol:
+            exit_sig = detect_exit(sym_state['recent_bricks'], n_fresh, portfolio_state['active_direction'])
+            if exit_sig is not None:
+                logger.info(f"Renko-Realtime: Exit-Signal {symbol} @ {exit_sig['exit_price']:.6f}"
+                            + (" [DRY-RUN]" if dry_run else ""))
+                if not dry_run:
+                    await loop.run_in_executor(None, close_renko_position, exchange, symbol,
+                                                'Gegen-Brick (Echtzeit)', telegram_cfg, AM_STATE_PATH,
+                                                am_base_pct, am_growth, am_streak)
+                portfolio_state = {'active_symbol': None, 'active_direction': None}
+                save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
+        elif not portfolio_state.get('active_symbol') and not soft_paused:
+            entry_sig = detect_fresh_entry(sym_state['recent_bricks'], n_fresh, horizontal_lookback, breakout_run)
+            if entry_sig is not None:
+                logger.info(f"Renko-Realtime: Entry-Signal {symbol} {entry_sig['direction'].upper()} "
+                            f"@ {entry_sig['entry_price']:.6f}" + (" [DRY-RUN]" if dry_run else ""))
+                if dry_run:
+                    portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction']}
+                    save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
+                else:
+                    result = await loop.run_in_executor(
+                        None, open_renko_position, exchange, symbol, entry_sig['direction'],
+                        entry_sig['entry_price'], cfg, telegram_cfg, AM_STATE_PATH)
+                    if result['action'] == 'entered':
+                        portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction']}
+                        save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
 
     stream = BitgetTradeStream(symbols)
     logger.info(f"Renko-Realtime: verbinde mit Bitget-WebSocket fuer {symbols}...")
@@ -199,42 +267,8 @@ async def run(dry_run: bool = False):
         if agg is None:
             continue
         finished_bar = agg.add_tick(ts_ms, price)
-        if finished_bar is None:
-            continue
-
-        new_candles = bars_to_df([finished_bar])
-        sym_state, fresh_bricks = update_symbol_bricks(brick_state[symbol], new_candles,
-                                                         base_pct_by_symbol[symbol], k_entropy, h_window)
-        brick_state[symbol] = sym_state
-        n_fresh = len(fresh_bricks)
-
-        if n_fresh > 0:
-            if portfolio_state.get('active_symbol') == symbol:
-                exit_sig = detect_exit(sym_state['recent_bricks'], n_fresh, portfolio_state['active_direction'])
-                if exit_sig is not None:
-                    logger.info(f"Renko-Realtime: Exit-Signal {symbol} @ {exit_sig['exit_price']:.6f}"
-                                + (" [DRY-RUN]" if dry_run else ""))
-                    if not dry_run:
-                        await loop.run_in_executor(None, close_renko_position, exchange, symbol,
-                                                    'Gegen-Brick (Echtzeit)', telegram_cfg, AM_STATE_PATH,
-                                                    am_base_pct, am_growth, am_streak)
-                    portfolio_state = {'active_symbol': None, 'active_direction': None}
-                    save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
-            elif not portfolio_state.get('active_symbol') and not soft_paused:
-                entry_sig = detect_fresh_entry(sym_state['recent_bricks'], n_fresh, horizontal_lookback, breakout_run)
-                if entry_sig is not None:
-                    logger.info(f"Renko-Realtime: Entry-Signal {symbol} {entry_sig['direction'].upper()} "
-                                f"@ {entry_sig['entry_price']:.6f}" + (" [DRY-RUN]" if dry_run else ""))
-                    if dry_run:
-                        portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction']}
-                        save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
-                    else:
-                        result = await loop.run_in_executor(
-                            None, open_renko_position, exchange, symbol, entry_sig['direction'],
-                            entry_sig['entry_price'], cfg, telegram_cfg, AM_STATE_PATH)
-                        if result['action'] == 'entered':
-                            portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction']}
-                            save_portfolio_state(PORTFOLIO_STATE_PATH, portfolio_state)
+        if finished_bar is not None:
+            await handle_new_bars(symbol, bars_to_df([finished_bar]))
 
         now = time.monotonic()
         if now - last_state_save > STATE_SAVE_INTERVAL_SECONDS:
@@ -243,6 +277,17 @@ async def run(dry_run: bool = False):
 
         if now - last_enabled_check > ENABLED_RECHECK_INTERVAL_SECONDS:
             last_enabled_check = now
+
+            # Bei brick_tf=5m (statt der frueheren 5s-Bars) ist ein Symbol OHNE einen einzigen
+            # Trade-Tick ueber ein volles 5-Minuten-Fenster deutlich plausibler (ruhige Coins in
+            # ruhigen Phasen) -- ohne diesen Flush wuerde ein solches Symbol seinen Bar einfach
+            # nie abschliessen und seine Brick-Kette stillschweigend einfrieren, bis der naechste
+            # echte Trade eintrifft (siehe utils/realtime_bars.py:flush_stale_bars).
+            now_ms = int(time.time() * 1000)
+            for sym, agg in aggregators.items():
+                flushed = agg.flush_stale_bars(now_ms)
+                if flushed:
+                    await handle_new_bars(sym, bars_to_df(flushed))
 
             # Periodischer Abgleich gegen die echten Boersen-Positionen -- NICHT nur einmal beim
             # Start (Fund 2026-09-23: eine manuelle Positions-Schliessung durch den User waehrend
@@ -279,11 +324,11 @@ async def run(dry_run: bool = False):
                 logger.error(f"Renko-Realtime: Settings-Neucheck fehlgeschlagen: {e}")
 
         # HINWEIS: kein automatischer taeglicher Konsistenzcheck hier (anders als beim Cron-
-        # basierten run_renko_breakout.py) -- check_brick_chain_consistency() baut zum Vergleich
-        # aus 5m-REST-Kerzen neu auf, waehrend dieser Prozess auf 5s-Echtzeit-Bars laeuft. Beide
-        # Granularitaeten liefern strukturell unterschiedliche Brick-Ketten -- ein Vergleich
-        # zwischen ihnen wuerde staendig falsche Abweichungs-Alarme erzeugen, kein echtes
-        # Diagnosewerkzeug.
+        # basierten run_renko_breakout.py). Seit dem Granularitaets-Fix (2026-09-24, siehe
+        # Moduldoc) baut dieser Prozess Bricks aus derselben brick_tf-Groesse wie der 5m-REST-
+        # Neuaufbau -- check_brick_chain_consistency() waere technisch jetzt sinnvoll anwendbar
+        # (anders als bei der fruehen 5-Sekunden-Variante), ist aber bewusst NICHT verdrahtet:
+        # das war nicht Teil dieses Fixes und braucht eine eigene, separate Entscheidung.
 
 
 if __name__ == '__main__':
