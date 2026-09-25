@@ -103,7 +103,7 @@ def reconcile_portfolio_state(exchange, symbols: list, portfolio_state: dict, te
     if active_symbol and active_symbol not in exchange_open:
         logger.info(f"Renko: {active_symbol} war laut lokalem Zustand offen, ist es auf der "
                     f"Boerse aber nicht mehr (regulaerer Exit oder Sicherheits-Stop) -- reconciliere.")
-        resolve_am_outcome(exchange, am_state_path, base_pct, growth_factor, streak_target)
+        resolve_am_outcome(exchange, active_symbol, am_state_path, base_pct, growth_factor, streak_target)
         portfolio_state = {'active_symbol': None, 'active_direction': None}
     elif not active_symbol and exchange_open:
         found_symbol = next(iter(exchange_open))
@@ -236,9 +236,10 @@ if __name__ == '__main__':
                 logger.info(f"Renko: Exit-Signal fuer {symbol} @ {exit_sig['exit_price']:.6f} "
                             f"({exit_sig['exit_ts']}).")
                 if not args.dry_run:
-                    close_renko_position(exchange, symbol, 'Gegen-Brick', telegram_cfg, AM_STATE_PATH,
-                                          am_base_pct, am_growth, am_streak)
-                portfolio_state = {'active_symbol': None, 'active_direction': None}
+                    close_renko_position(exchange, symbol, portfolio_state['active_direction'],
+                                          portfolio_state.get('active_entry_price', 0), 'Gegen-Brick',
+                                          telegram_cfg, AM_STATE_PATH, am_base_pct, am_growth, am_streak)
+                portfolio_state = {'active_symbol': None, 'active_direction': None, 'active_entry_price': None}
         elif not portfolio_state.get('active_symbol'):
             entry_sig = detect_fresh_entry(sym_state['recent_bricks'], n_fresh, horizontal_lookback,
                                             breakout_run)
@@ -259,7 +260,8 @@ if __name__ == '__main__':
             result = open_renko_position(exchange, symbol, entry_sig['direction'],
                                           entry_sig['entry_price'], cfg, telegram_cfg, AM_STATE_PATH)
             if result['action'] == 'entered':
-                portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction']}
+                portfolio_state = {'active_symbol': symbol, 'active_direction': entry_sig['direction'],
+                                    'active_entry_price': result['entry_price']}
         else:
             logger.info("Renko: --dry-run aktiv, kein echter Entry.")
 

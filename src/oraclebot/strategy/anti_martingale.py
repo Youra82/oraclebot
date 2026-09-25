@@ -10,6 +10,17 @@
 # Zustandsbehaftet (im Gegensatz zur zustandslosen %-Risiko-Groesse in signal.py):
 # braucht Persistenz ueber Bot-Neustarts/Cron-Laeufe hinweg, da der naechste Einsatz vom Ausgang
 # der VORHERIGEN Position abhaengt.
+#
+# GEMEINSAMER Streak ueber alle Symbole (Fund 2026-09-25, Mehrfach-Positionen-Umbau): stake_pct/
+# consecutive_wins ist EIN gemeinsamer Zustand fuers ganze Portfolio, nicht pro Symbol -- welcher
+# Trade zuerst SCHLIESST (unabhaengig von welchem Symbol), aktualisiert den Streak zuerst. Die
+# fruehere indirekte Gewinn/Verlust-Erkennung ueber einen Kontostand-Vorher/Nachher-Vergleich
+# (record_pending_position/resolve_pending_outcome) funktionierte nur, weil GENAU EINE Position
+# gleichzeitig offen war -- der Kontostand-Delta war dadurch eindeutig einem Trade zuordenbar. Bei
+# mehreren gleichzeitig offenen Positionen bewegen mehrere Trades den Kontostand gleichzeitig,
+# der Trick wird uneindeutig. Ersetzt durch direkte Gewinn/Verlust-Uebergabe (is_win) vom Aufrufer
+# (renko_live_trade.py), der den echten Fuellpreis der Order bzw. die echte Positions-Historie
+# kennt -- kein Kontostand-Rateraten mehr noetig.
 import json
 import logging
 import os
@@ -22,20 +33,18 @@ def load_state(path: str, base_pct: float) -> dict:
 
     Ausserhalb eines laufenden Gewinn-Streaks (consecutive_wins == 0) MUSS stake_pct exakt
     base_pct entsprechen -- wird beim Laden erzwungen, auch wenn bereits ein (dann zwangslaeufig
-    veralteter) Wert gespeichert ist. Ohne diesen Sync bleibt ein Bot nach einem
-    optimize_barrier_model.py-Lauf, der anti_martingale_base_pct aendert, bis zu streak_target-1
-    weitere Trades lang auf dem ALTEN Basiswert haengen (reales Vorkommnis 2026-07-28: Live-
-    Margin passte zu einem laengst ueberholten, Wochen alten base_pct statt dem frisch
-    optimierten). Waehrend eines laufenden Streaks bleibt das Compounding bewusst unangetastet --
-    resolve_pending_outcome() synct ohnehin bei jedem Verlust oder Streak-Abschluss auf den dann
-    aktuellen base_pct."""
+    veralteter) Wert gespeichert ist. Ohne diesen Sync bleibt ein Bot nach einer Config-Aenderung,
+    die anti_martingale_base_pct aendert, bis zu streak_target-1 weitere Trades lang auf dem ALTEN
+    Basiswert haengen (realer Fund 2026-07-28). Waehrend eines laufenden Streaks bleibt das
+    Compounding bewusst unangetastet -- update_after_close() synct ohnehin bei jedem Verlust oder
+    Streak-Abschluss auf den dann aktuellen base_pct."""
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             state = json.load(f)
         if not state.get('stake_pct') or state.get('consecutive_wins', 0) == 0:
             state['stake_pct'] = base_pct
         return state
-    return {'stake_pct': base_pct, 'consecutive_wins': 0, 'pending_position': None}
+    return {'stake_pct': base_pct, 'consecutive_wins': 0}
 
 
 def save_state(path: str, state: dict):
@@ -46,40 +55,18 @@ def save_state(path: str, state: dict):
 
 def compute_margin(balance: float, state: dict) -> float:
     """Positionsgroesse (Margin in USDT) fuer den naechsten Trade: aktueller Einsatz-Prozentsatz
-    vom AKTUELLEN Guthaben (nicht vom Startkapital -- reines Compounding)."""
+    vom AKTUELLEN Guthaben (nicht vom Startkapital -- reines Compounding). `balance` ist das
+    FREIE (nicht durch andere offene Positionen gebundene) Guthaben -- bei mehreren gleichzeitig
+    offenen Positionen automatisch kleiner, weil exchange.fetch_balance_usdt() nur den freien
+    Anteil zurueckgibt (selbstbegrenzend, keine zusaetzliche Logik hier noetig)."""
     return balance * state.get('stake_pct', 0.0) / 100.0
 
 
-def record_pending_position(state: dict, balance_before: float, expected_win_balance: float,
-                             expected_loss_balance: float) -> dict:
-    """Merkt sich die gerade eroeffnete Position, damit der naechste Lauf (wenn keine offene
-    Position mehr gefunden wird) anhand des Guthabens bestimmen kann, ob SL oder TP gegriffen hat.
-    """
-    state['pending_position'] = {
-        'balance_before': balance_before,
-        'expected_win_balance': expected_win_balance,
-        'expected_loss_balance': expected_loss_balance,
-    }
-    return state
-
-
-def resolve_pending_outcome(state: dict, current_balance: float, base_pct: float,
-                             growth_factor: float = 2.0, streak_target: int = 3) -> dict:
-    """Bestimmt anhand des aktuellen Guthabens, ob die zuletzt eroeffnete Position als Gewinn
-    oder Verlust geschlossen wurde -- es gibt keine direkte Order-Historie-Abfrage in Exchange,
-    daher der indirekte Vergleich gegen die beiden bei Eroeffnung erwarteten Ausgaenge (naeher an
-    Win- oder Loss-Erwartung gewinnt; robust gegen kleine Abweichungen durch Fees/Slippage).
-    Aktualisiert stake_pct/consecutive_wins nach der Anti-Martingale-Regel und loescht
-    pending_position. Kein Effekt, wenn keine pending_position vorliegt.
-    """
-    pending = state.get('pending_position')
-    if pending is None:
-        return state
-
-    dist_to_win = abs(current_balance - pending['expected_win_balance'])
-    dist_to_loss = abs(current_balance - pending['expected_loss_balance'])
-    is_win = dist_to_win < dist_to_loss
-
+def update_after_close(state: dict, base_pct: float, growth_factor: float, streak_target: int,
+                        is_win: bool) -> dict:
+    """Aktualisiert stake_pct/consecutive_wins nach der Anti-Martingale-Regel, anhand eines
+    BEKANNTEN Gewinn/Verlust-Ausgangs (vom Aufrufer anhand des echten Fuellpreises bzw. der
+    echten Positions-Historie ermittelt -- siehe Moduldoc)."""
     if is_win:
         state['consecutive_wins'] = state.get('consecutive_wins', 0) + 1
         if state['consecutive_wins'] >= streak_target:
@@ -91,8 +78,6 @@ def resolve_pending_outcome(state: dict, current_balance: float, base_pct: float
         state['consecutive_wins'] = 0
         state['stake_pct'] = base_pct
 
-    logger.info(f"Anti-Martingale: letzte Position als {'GEWINN' if is_win else 'VERLUST'} erkannt "
-                f"(Guthaben={current_balance:.2f}, erwartet Win={pending['expected_win_balance']:.2f}/"
-                f"Loss={pending['expected_loss_balance']:.2f}). Naechster Einsatz: {state['stake_pct']:.2f}%.")
-    state['pending_position'] = None
+    logger.info(f"Anti-Martingale: Trade als {'GEWINN' if is_win else 'VERLUST'} verbucht. "
+                f"Naechster Einsatz: {state['stake_pct']:.2f}%.")
     return state

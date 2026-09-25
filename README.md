@@ -17,10 +17,11 @@ an. Kein Vorhersage-Modell:
   Richtung, direkt nach `horizontal_lookback` Bricks gemischter Richtung davor.
 - **Exit**: der erste vollständig ausgebildete Gegen-Brick. Kein festes Take-Profit — die
   Brick-Struktur selbst definiert das Ende des Trades.
-- **Portfolio-Arbitrierung**: nur EINE offene Position gleichzeitig über alle 7 Coins. Erstes
-  frisches Signal gewinnt, alle anderen werden in derselben Runde verworfen (nicht nachgeholt).
-- **Positionsgröße**: Anti-Martingale (Paroli) — Einsatz wächst nach Gewinnserien, fällt sofort
-  auf die Basis zurück nach jedem Verlust.
+- **Mehrfach-Positionen**: jedes der 7 Coins handelt komplett UNABHÄNGIG (seit 2026-09-25, siehe
+  unten) — kein gemeinsamer Slot, keine Arbitrierung zwischen Symbolen mehr.
+- **Positionsgröße**: Anti-Martingale (Paroli), EIN gemeinsamer Streak über alle Symbole —
+  Einsatz wächst nach Gewinnserien (unabhängig welches Symbol gewinnt), fällt sofort auf die
+  Basis zurück nach jedem Verlust.
 
 Validiert über 70/30 In-Sample/Out-of-Sample-Split, mit realistischen Kosten (Taker-Gebühren,
 Slippage, echte Bitget-Funding-Historie) und einer Liquidationsprüfung anhand der tatsächlichen
@@ -67,7 +68,7 @@ Alle Pfade relativ zum `oraclebot`-Wurzelverzeichnis. Auf dem VPS mit `.venv/bin
 | `.venv/bin/python3 scripts/run_renko_realtime.py` | Manuell im Vordergrund starten (nur zum Debuggen) |
 | `kill $(cat artifacts/state/renko_realtime.pid)` | Prozess beenden — der Watchdog startet ihn danach automatisch neu! |
 | Cronjob-Zeile entfernen **+** `kill $(cat artifacts/state/renko_realtime.pid)` | Bot **vollständig** stoppen |
-| `enabled: false` in `settings.json` + `git push` + `./update.sh` | Soft-Pause: keine neuen Entries, offene Position läuft bis Exit weiter |
+| `enabled: false` in `settings.json` + `git push` + `./update.sh` | Soft-Pause: keine neuen Entries, offene Position(en) laufen bis Exit weiter |
 
 **📊 Zustand & Monitoring**
 | Befehl | Zweck |
@@ -76,7 +77,7 @@ Alle Pfade relativ zum `oraclebot`-Wurzelverzeichnis. Auf dem VPS mit `.venv/bin
 | `grep -i "ERROR" logs/cron_renko.log` | Fehler im Log finden |
 | `ps aux \| grep run_renko_realtime` | Läuft der Prozess? |
 | `cat artifacts/state/renko_realtime.pid` | Vom Watchdog überwachte PID |
-| `cat artifacts/state/renko_realtime_portfolio.json` | Aktuell offene Position (falls vorhanden) |
+| `cat artifacts/state/renko_realtime_positions.json` | Aktuell offene Position(en) je Symbol (mehrere gleichzeitig möglich) |
 | `cat artifacts/state/renko_realtime_anti_martingale.json` | Aktueller Einsatz-Prozentsatz |
 | `crontab -l` | Cronjobs anzeigen |
 
@@ -136,8 +137,7 @@ flowchart LR
     B --> C["🧱 EAR-Brick-Builder<br/>ear_bricks.py"]:::proc
     C --> D{"📈 Breakout-<br/>Signal?"}:::decision
     D -- "nein, weiter sammeln" --> C
-    D -- "ja" --> E["🏆 Portfolio-Arbitrierung<br/>1 Slot für 7 Coins"]:::proc
-    E -- "gewinnt" --> F["💰 Entry +<br/>Sicherheits-Stop"]:::action
+    D -- "ja" --> F["💰 Entry +<br/>Sicherheits-Stop"]:::action
     F --> G["🚪 Exit beim<br/>1. Gegen-Brick"]:::action
     F --> H["📲 Telegram"]:::io
     G --> H
@@ -148,28 +148,17 @@ flowchart LR
     classDef action fill:#D0021B,stroke:#8E0113,color:#fff
 ```
 
-### Portfolio-Arbitrierung (7 Coins, 1 Slot)
+### Mehrfach-Positionen (7 Coins, 7 unabhängige Positions-Slots)
 
 ```mermaid
 flowchart LR
-    N["NEAR"]:::c1
-    D["DOT"]:::c2
-    S["SOL"]:::c3
-    A["ADA"]:::c4
-    V["AVAX"]:::c5
-    U["SUI"]:::c6
-    X["XRP"]:::c7
-    P{{"🏁 erstes Signal<br/>gewinnt"}}:::win
-    T(["💼 EINE offene<br/>Position"]):::result
-
-    N --> P
-    D --> P
-    S --> P
-    A --> P
-    V --> P
-    U --> P
-    X --> P
-    P --> T
+    N["NEAR"]:::c1 --> NT(("eigene<br/>Position")):::c1
+    D["DOT"]:::c2 --> DT(("eigene<br/>Position")):::c2
+    S["SOL"]:::c3 --> ST(("eigene<br/>Position")):::c3
+    A["ADA"]:::c4 --> AT(("eigene<br/>Position")):::c4
+    V["AVAX"]:::c5 --> VT(("eigene<br/>Position")):::c5
+    U["SUI"]:::c6 --> UT(("eigene<br/>Position")):::c6
+    X["XRP"]:::c7 --> XT(("eigene<br/>Position")):::c7
 
     classDef c1 fill:#E74C3C,color:#fff
     classDef c2 fill:#E67E22,color:#fff
@@ -178,12 +167,11 @@ flowchart LR
     classDef c5 fill:#1ABC9C,color:#fff
     classDef c6 fill:#3498DB,color:#fff
     classDef c7 fill:#9B59B6,color:#fff
-    classDef win fill:#2C3E50,color:#fff
-    classDef result fill:#27AE60,color:#fff
 ```
 
-Alle anderen Signale in derselben Runde werden verworfen, nicht nachgeholt — daher die bekannte
-NEAR-Schlagseite trotz kalibrierter Brick-Raten (siehe Tabelle unten).
+Jedes Symbol handelt komplett unabhängig — kein gemeinsamer Slot mehr, um den konkurriert werden
+könnte (siehe [Warum Mehrfach-Positionen](#warum-mehrfach-positionen-statt-ein-slot-arbitrierung)
+unten für den Grund).
 
 ---
 
@@ -253,6 +241,65 @@ längeren Zeitraum nach diesem Fix.
 
 ---
 
+## Warum Mehrfach-Positionen statt Ein-Slot-Arbitrierung
+
+**Fund 2026-09-25:** auch nach dem Granularitäts-Fix blieb eine Live-vs-Backtest-Lücke bestehen
+(50% Live-Winrate über 16 echte Trades vs. ~72–73% in einer großen, sauberen Backtest-Referenz
+über 150+ Trades). Direkte Untersuchung fand die Ursache: am 2026-09-24 08:20:00 UTC
+signalisierten SOL **und** ADA unabhängig voneinander einen echten Ausbruch in derselben
+5-Minuten-Kerze — ein echter Gleichstand, kein Kaskadeneffekt, empirisch bestätigt. Bei der alten
+"ein Slot für 7 Coins"-Arbitrierung entscheidet in so einem Fall live die tatsächliche
+WebSocket-Tick-Ankunftsreihenfolge (Netzwerk-Timing) — nicht reproduzierbar von keinem Backtest.
+~25–30% aller Trades im 28-Tage-Fenster sind ein solcher echter Gleichstand.
+
+Drei Versuche, den Gleichstand über eine *bessere Regel* aufzulösen, statt die Ursache zu
+beseitigen, scheiterten alle an der Out-of-Sample-Prüfung:
+
+| Kandidat | IS-Ergebnis | OOS-Ergebnis |
+|---|---|---|
+| Trailing-Exit (frühzeitiger Ausstieg nach N Bricks Gewinn) | schlechter als Baseline | schlechter als Baseline |
+| Teil-Gewinnmitnahme (Bruchteil der Position früh sichern) | schlechter als Baseline | schlechter als Baseline |
+| Momentum-Arbitrierung (stärkste Kursbewegung gewinnt den Gleichstand) | **besser** als Baseline (+132.82% vs. +120.11%) | **schlechter** als Baseline (+102.14% vs. +121.95%) |
+
+Die Momentum-Regel ist das Lehrbuchbeispiel für Overfitting: sieht auf begrenzten Daten
+überzeugend aus, bricht bei der Gegenprobe ein — in diesem Gleichstand steckt keine
+ausnutzbare Information.
+
+**Strukturelle Lösung statt Regel-Bastelei:** wenn es keinen gemeinsamen Slot mehr gibt, um den
+konkurriert werden könnte, gibt es auch keinen Live-Zufall mehr, der vom Backtest abweichen kann.
+Jedes der 7 Symbole handelt seitdem komplett unabhängig (eigener Positions-Zustand je Symbol,
+`open_renko_position()`/`close_renko_position()` bemessen die Größe automatisch korrekt am
+FREIEN — nicht am gesamten — Guthaben). Sauber mit echter Kapital-/Gebühren-Simulation über 28
+UND 90 Tage (jeweils IS+OOS) validiert, bevor der Code umgebaut wurde:
+
+| | Trades | Winrate | Endkapital (28→) | Max Drawdown |
+|---|--:|--:|--:|--:|
+| Mehrfach-Positionen — 28 Tage IS/OOS | 1436 / 963 | 57.7% / 59.7% | +932% / +694% | 1.6% / 0.9% |
+| Ein-Slot (alt) — 28 Tage IS/OOS | 223 / 157 | 57.8% / 61.1% | +47% / +47% | 0.9% / 0.8% |
+| Mehrfach-Positionen — 90 Tage IS/OOS | 3556 / 2370 | 55.1% / 57.9% | +17078% / +7304% | 2.4% / 1.7% |
+| Ein-Slot (alt) — 90 Tage IS/OOS | 559 / 378 | 49.0% / 56.6% | +131% / +86% | 2.4% / 0.8% |
+
+Mehrfach-Positionen schlägt Ein-Slot konsistent über zwei verschiedene Zeitfenster, IS und OOS,
+bei ÄHNLICHEM oder niedrigerem Max-Drawdown trotz bis zu 7x mehr gleichzeitigem Kapitaleinsatz —
+der Diversifikationseffekt über mehrere, nicht perfekt korrelierte Positionen kompensiert das
+höhere Einzelrisiko. Die Endkapital-Prozentzahlen über 90 Tage sind ein reines Compounding-
+Artefakt (3556 Trades, ständig reinvestiert) und nicht als realistische Erwartung zu lesen — die
+eigentlich belastbaren Signale sind Drawdown und Winrate-Stabilität über beide Zeitfenster.
+
+Macht oraclebot damit auch strukturell ähnlicher zu `zerobot`: dort läuft jedes Symbol/Timeframe
+bereits seit jeher als eigenständiger Prozess, ohne gemeinsamen Slot.
+
+**Anti-Martingale bei Mehrfach-Positionen:** EIN gemeinsamer Streak fürs ganze Portfolio (nicht
+pro Symbol) — welcher Trade zuerst schließt, aktualisiert den Streak zuerst. Die frühere
+Gewinn/Verlust-Erkennung über einen Kontostand-Vorher/Nachher-Vergleich funktionierte nur, weil
+garantiert genau eine Position gleichzeitig offen war; bei mehreren gleichzeitig offenen
+Positionen bewegen mehrere Trades den Kontostand gleichzeitig, der Trick wird uneindeutig.
+Ersetzt durch direkte Gewinn/Verlust-Erkennung am echten Fuellpreis der Order (bzw. an der echten
+Positions-Historie, falls die Position extern geschlossen wurde, z.B. durch den
+Sicherheits-Stop) — siehe `strategy/anti_martingale.py`.
+
+---
+
 ### Warum die Brick-Kette live nicht einfach neu aufgebaut wird
 
 Direkt aus einem dokumentierten `zerobot`-Vorfall übernommen: dort baute der Live-Betrieb die
@@ -282,7 +329,7 @@ Zahl. Kurzfassung:
 | Hebel | 20x | Bei 40x lag die reale Liquidationsdistanz (mit den echten, coin-spezifischen Bitget-Wartungsmargen statt einer BTC-Annahme) nur bei ~1.78-2.04% — zu nah am historisch schlechtesten beobachteten Kursausschlag (1.37%). 20x gibt ~3x Puffer. |
 | Sicherheits-Stop | 3.0% | Backstop bei Prozessausfall (kein reguläres Exit-Mittel — der reguläre Exit ist der Gegen-Brick). Muss klar unter der Liquidationsdistanz liegen, sonst wirkungslos. |
 | Einsatz-Basis (Anti-Martingale) | 2.0% | Vom User bewusst gewählter, aggressivster der 3 getesteten Kandidaten (0.5/1.0/2.0%). |
-| `base_pct_brick` | pro Coin kalibriert | Einheitliche Brick-Größe ließ volatilere Coins (NEAR) ~2.75x so oft Bricks bilden wie ruhigere (XRP), was die Portfolio-Arbitrierung stark NEAR-lastig machte. Kalibriert auf ~65 Bricks/Tag je Coin (Bisektion nur auf In-Sample). Bekannte Grenze: die tatsächlich ARBITRIERTE Trade-Verteilung bleibt trotzdem leicht NEAR-lastig (korrelierte marktweite Vola-Schübe, nicht mehr über Brick-Größe lösbar). |
+| `base_pct_brick` | pro Coin kalibriert | Einheitliche Brick-Größe ließ volatilere Coins (NEAR) ~2.75x so oft Bricks bilden wie ruhigere (XRP). Kalibriert auf ~65 Bricks/Tag je Coin (Bisektion nur auf In-Sample). Seit dem Mehrfach-Positionen-Umbau (2026-09-25) konkurrieren Coins nicht mehr um einen gemeinsamen Slot — die frühere NEAR-Schlagseite durch die Arbitrierung entfällt damit strukturell. |
 
 ---
 
@@ -381,9 +428,9 @@ Echtzeit-Bars entstehen können.
 #### Strategie pausieren (Kill-Switch, Soft-Pause)
 
 `renko_breakout_settings.enabled` auf `false`, committen, pushen, `./update.sh` auf dem VPS. Der
-laufende Prozess prüft den Flag alle 60 Sekunden neu und stoppt dann NEUE Entries — eine bereits
-offene Position wird aber weiter regulär bis zu ihrem Brick-Exit überwacht (Soft-Pause, kein
-hartes Kill). Der Prozess selbst läuft dabei weiter (der Watchdog hält ihn sonst sofort wieder am
+laufende Prozess prüft den Flag alle 60 Sekunden neu und stoppt dann NEUE Entries — bereits
+offene Position(en) werden aber weiter regulär bis zu ihrem jeweiligen Brick-Exit überwacht
+(Soft-Pause, kein hartes Kill). Der Prozess selbst läuft dabei weiter (der Watchdog hält ihn sonst sofort wieder am
 Leben). Für einen vollständigen Stopp: Cronjob-Zeile entfernen (`crontab -e`) UND den laufenden
 Prozess beenden (`kill <PID>` aus `artifacts/state/renko_realtime.pid`).
 
@@ -479,11 +526,12 @@ nicht bei GitHub hinterlegt.
   Kursausschlag gehabt haben, der bei hohem Hebel längst zur Liquidation geführt hätte. Jeder
   Realismus-Backtest hier prüft deshalb den maximalen adversen Ausschlag (MAE) anhand echter
   5m-High/Low-Kerzen gegen die Liquidationsdistanz, nicht nur den Brick-definierten Exit-Preis.
-- **Portfolio-Arbitrierung ("ein Slot, erstes Signal gewinnt") verzerrt die Coin-Verteilung
-  stärker, als reine Brick-Raten-Kalibrierung ausgleichen kann** — korrelierte, marktweite
-  Volatilitätsschübe lassen einzelne Coins (hier: NEAR) trotz ausgeglichener Kandidaten-Signalrate
-  überproportional oft gewinnen. Nur über eine andere Arbitrierungs-Regel lösbar (noch nicht
-  umgesetzt).
+- **Ein gemeinsamer Slot für alle 7 Coins erzeugt bei echtem Gleichstand einen live nicht
+  reproduzierbaren Zufall (behoben 2026-09-25).** Siehe
+  [Warum Mehrfach-Positionen](#warum-mehrfach-positionen-statt-ein-slot-arbitrierung) — drei
+  Versuche, den Gleichstand über eine bessere Regel aufzulösen, scheiterten an der
+  Out-of-Sample-Prüfung. Strukturell gelöst durch komplett unabhängige Positionen je Symbol,
+  nicht durch eine "smartere" Arbitrierungs-Regel.
 - **Der periodische Reconcile gegen die echte Börse (alle 60s) ist kein optionales Extra.** Der
   laufende Prozess gleicht seinen internen Positionszustand nicht nur beim Start, sondern
   fortlaufend gegen Bitget ab — ohne das würde eine manuell (oder anderweitig extern) geschlossene
