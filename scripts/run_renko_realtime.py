@@ -220,6 +220,26 @@ async def run(dry_run: bool = False):
     soft_paused = False  # enabled=false erkannt, aber noch offene Position(en) -- keine neuen
                           # Entries mehr, aber die aktiven Positionen weiter bis zum Exit ueberwachen
 
+    # Diagnose-Instrumentierung (Fund 2026-09-25): wiederholte, unerklaerte 40-55 Minuten
+    # Luecken im Log beobachtet -- ECHTE Trades fanden statt, aber KEINE Log-Zeile jeglicher Art
+    # (nicht mal die periodischen Reconcile-Zeilen) erschien in diesem Fenster. Duplikat-Prozess
+    # und reine Renko-Pfadabhaengigkeit wurden bereits ausgeschlossen. Der Heartbeat laeuft als
+    # EIGENSTAENDIGER Task (wie der Ping-Loop in bitget_ws.py), UNABHAENGIG vom Tick-Empfang --
+    # bleibt er still, haengt die Event-Loop selbst; laeuft er normal weiter waehrend Ticks
+    # ausbleiben, ist der WebSocket-Empfang das Problem. Das try/except um handle_new_bars deckt
+    # ausserdem auf, ob dort bisher eine Exception still verschluckt wurde (vorher ungeschuetzt).
+    tick_stats = {'count': 0, 'last_symbol': None, 'last_ts': None}
+
+    async def heartbeat_loop():
+        while True:
+            await asyncio.sleep(30)
+            n_open = sum(1 for v in positions_state.values() if v is not None)
+            logger.info(f"Renko-Realtime: HEARTBEAT -- {tick_stats['count']} Ticks seit Start, "
+                        f"letzter Tick: {tick_stats['last_symbol']} @ {tick_stats['last_ts']}, "
+                        f"{n_open}/{len(symbols)} Positionen offen, soft_paused={soft_paused}")
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
     async def handle_new_bars(symbol: str, new_candles) -> None:
         """Verarbeitet neue, abgeschlossene Bars fuer EIN Symbol: Brick-Kette fortsetzen, Exit-
         oder Entry-Signal pruefen, ggf. ausfuehren -- komplett unabhaengig von allen anderen
@@ -269,12 +289,20 @@ async def run(dry_run: bool = False):
     logger.info(f"Renko-Realtime: verbinde mit Bitget-WebSocket fuer {symbols}...")
 
     async for symbol, ts_ms, price in stream.stream():
+        tick_stats['count'] += 1
+        tick_stats['last_symbol'] = symbol
+        tick_stats['last_ts'] = ts_ms
+
         agg = aggregators.get(symbol)
         if agg is None:
             continue
         finished_bar = agg.add_tick(ts_ms, price)
         if finished_bar is not None:
-            await handle_new_bars(symbol, bars_to_df([finished_bar]))
+            try:
+                await handle_new_bars(symbol, bars_to_df([finished_bar]))
+            except Exception:
+                logger.error(f"Renko-Realtime: unerwarteter Fehler in handle_new_bars({symbol}) -- "
+                             f"Tick-Verarbeitung laeuft trotzdem weiter, siehe Traceback:", exc_info=True)
 
         now = time.monotonic()
         if now - last_state_save > STATE_SAVE_INTERVAL_SECONDS:
@@ -293,7 +321,12 @@ async def run(dry_run: bool = False):
             for sym, agg in aggregators.items():
                 flushed = agg.flush_stale_bars(now_ms)
                 if flushed:
-                    await handle_new_bars(sym, bars_to_df(flushed))
+                    try:
+                        await handle_new_bars(sym, bars_to_df(flushed))
+                    except Exception:
+                        logger.error(f"Renko-Realtime: unerwarteter Fehler in handle_new_bars({sym}) "
+                                     f"(Stale-Bar-Flush) -- laeuft trotzdem weiter, siehe Traceback:",
+                                     exc_info=True)
 
             # Periodischer Abgleich gegen die echten Boersen-Positionen -- NICHT nur einmal beim
             # Start (Fund 2026-09-23: eine manuelle Positions-Schliessung durch den User waehrend
@@ -321,6 +354,7 @@ async def run(dry_run: bool = False):
                         logger.info("Renko-Realtime: enabled=false erkannt, keine offene Position -- beende sauber.")
                         save_state_atomic(BRICK_STATE_PATH, brick_state)
                         stream.stop()
+                        heartbeat_task.cancel()
                         return
                 elif soft_paused:
                     logger.info("Renko-Realtime: enabled=true erkannt -- Pause aufgehoben, Entries wieder aktiv.")
