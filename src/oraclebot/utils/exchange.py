@@ -99,18 +99,36 @@ class Exchange:
 
     def fetch_closed_positions(self, symbol: str, limit: int = 100) -> list:
         """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) -- fuer den taeglichen
-        Live-Signal-Vergleich (analysis/live_signal_check.py). Anders als fetch_open_positions()
-        gibt Bitgets fetchPositionsHistory tatsaechlich abgeschlossene Positionen mit realisiertem
-        PnL zurueck (bestaetigt 2026-09-12, siehe Signal-Vergleich-Recherche) -- die fruehere
-        README-Annahme "Exchange kann keine Order-Historie abfragen" bezog sich nur auf
-        fetchClosedOrders/fetchMyTrades (dort fehlt der Realized-PnL je Position), nicht auf
-        diesen Endpunkt."""
+        Live-Signal-Vergleich (analysis/renko_live_signal_check.py) UND fuer die Anti-Martingale-
+        Gewinn/Verlust-Erkennung bei extern geschlossenen Positionen (strategy/renko_live_trade.py).
+
+        WICHTIG (Fund 2026-09-25): ccxt's vereinheitlichtes fetchPositionsHistory() existiert erst
+        ab einer neueren ccxt-Version als die in requirements.txt gepinnte (ccxt==4.3.5) -- auf
+        dem VPS schlug das live mit AttributeError fehl und liess dadurch JEDEN betroffenen Trade
+        faelschlich als Verlust verbuchen (der Fallback in renko_live_trade.py faengt Exceptions
+        konservativ als False ab). Der Fehler blieb bis dahin unbemerkt, weil vorher kein
+        Produktionscode diese Funktion tatsaechlich aufrief. Deshalb jetzt der rohe Bitget-
+        Endpunkt direkt (privateMixGetV2MixPositionHistoryPosition, bereits in ccxt 4.3.5
+        registriert, live gegen den echten Account verifiziert), manuell auf dieselbe
+        vereinheitlichte Form normalisiert, die der Rest des Codes erwartet (realizedPnl/side/
+        entryPrice/timestamp) -- unabhaengig von der ccxt-Version."""
         if not self.markets:
             return []
         try:
-            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
-            positions = self.exchange.fetch_positions_history([symbol], params=params, limit=limit)
-            return positions
+            market_id = self.exchange.market(symbol)['id']
+            params = {'symbol': market_id, 'productType': 'USDT-FUTURES', 'limit': str(limit)}
+            resp = self.exchange.privateMixGetV2MixPositionHistoryPosition(params)
+            raw_list = (resp.get('data') or {}).get('list') or []
+            return [{
+                'symbol': symbol,
+                'side': 'long' if p.get('holdSide') == 'long' else 'short',
+                'entryPrice': float(p.get('openAvgPrice') or 0),
+                'lastPrice': float(p.get('closeAvgPrice') or 0),
+                'realizedPnl': float(p.get('netProfit') or 0),
+                'timestamp': int(p.get('ctime') or 0),
+                'lastUpdateTimestamp': int(p.get('utime') or 0),
+                'info': p,
+            } for p in raw_list]
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Positions-Historie fuer {symbol}: {e}", exc_info=True)
             return []
