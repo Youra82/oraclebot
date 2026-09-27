@@ -45,18 +45,15 @@ Renko-Bricks entstehen nicht nach Zeit, sondern nach Preisbewegung: Ein neuer Br
 Schlusskurs eine Brick-Größe weiter läuft. Eine Richtungsumkehr braucht zwei Brick-Größen. Die Brick-Größe
 passt sich an die Marktunruhe an (EAR: Entropy-Adaptive Renko, `data/ear_bricks.py`).
 
-oraclebot nutzt zwei Ebenen gleichzeitig:
+oraclebot nutzt zwei Ebenen gleichzeitig. Ein echter Trade (ADA, September 2026), gerechnet mit der Signalfunktion
+des Bots:
 
-```
-Trend-Ebene (z. B. 4h-Bricks)   🟥  🟥  🟩  🟩  🟩  🟩  🟩  🟩  🟥 🟥
-                                        └── Trend: LONG ─────────────┘  └ Dreher → Ausstieg
+![Echter Trade mit 4h-Trend-Bricks und 1h-Bricks](docs/img/trade_example.png)
 
-Einstiegs-Ebene (1h-Bricks)     🟩 🟥 🟥 🟩 🟩 🟩 🟩 🟥 🟥 🟩 🟩 🟩 🟩 🟩 🟩 🟥 🟥 🟥
-                                        ▲                                 ▲
-                                     Einstieg LONG                      Ausstieg
-                                (Rücksetzer vorbei,                (4h-Brick dreht auf Rot)
-                                 Trend ist grün)
-```
+Die großen, transparenten Kästen sind die **4h-Bricks**, die kleinen die **1h-Bricks**, jeweils an der Kerze, deren
+Schlusskurs sie erzeugt hat. Der 4h-Trend ist grün, nach einem Rücksetzer auf 1h folgt der Einstieg Long. Der
+Ausstieg kommt erst, als der 4h-Brick auf Rot dreht, nicht bei den kleinen roten 1h-Bricks dazwischen. Ein Teil des
+Gewinns geht dabei zurück, weil eine Umkehr zwei Brick-Größen braucht.
 
 - **Trend:** die Richtung des letzten großen Bricks (2h, 4h, 8h oder 1 Tag). Grün heißt nur Long, rot nur Short.
 - **Einstieg:** auf 1h-Bricks, nur in Trendrichtung (Varianten A, B, C) oder direkt beim Dreher des großen
@@ -87,14 +84,18 @@ flowchart LR
 
 ## Die vier Einstiegsarten
 
-| Einstieg | Wann der Bot einsteigt | Skizze (Trend grün) |
-|---|---|---|
-| **A** | Nach einem Rücksetzer (mind. ein 1h-Brick gegen den Trend) beim **ersten** 1h-Brick zurück in Trendrichtung | `🟩 🟥 🟥 🟩▲` |
-| **C** | Wie A, aber erst beim **zweiten** 1h-Brick zurück in Trendrichtung | `🟩 🟥 🟥 🟩 🟩▲` |
-| **B** | Ausbruch: **6 gemischte** 1h-Bricks (Seitwärtsphase), danach **2 in Folge** in Trendrichtung | `🟩 🟥 🟩 🟥 🟥 🟩 · 🟩 🟩▲` |
-| **D** | **Sofort beim Dreher des großen Bricks.** Beim nächsten Dreher raus und direkt in die Gegenrichtung (immer im Markt) | `🟥 🟥 🟩▲` (große Bricks) |
+| Einstieg | Wann der Bot einsteigt |
+|---|---|
+| **A** | Nach einem Rücksetzer (mind. ein 1h-Brick gegen den Trend) beim **ersten** 1h-Brick zurück in Trendrichtung |
+| **C** | Wie A, aber erst beim **zweiten** 1h-Brick zurück in Trendrichtung |
+| **B** | Ausbruch: **6 gemischte** 1h-Bricks (Seitwärtsphase), danach **2 in Folge** in Trendrichtung |
+| **D** | **Sofort beim Dreher des großen Bricks.** Beim nächsten Dreher raus und direkt in die Gegenrichtung (immer im Markt) |
 
-`▲` = Einstieg. Bei rotem Trend gilt alles spiegelbildlich für Short.
+Alle vier an echten ADA-Bricks:
+
+![Die vier Einstiegsarten an echten Bricks](docs/img/entry_types.png)
+
+Bei rotem Trend gilt alles spiegelbildlich für Short.
 
 ---
 
@@ -368,6 +369,7 @@ src/oraclebot/
     ├── exchange.py           Bitget-Wrapper (inkl. strikter Positionsabfrage, Gesamtkapital)
     ├── telegram.py           Benachrichtigungen
     └── config.py             settings.json laden
+docs/img/                              Abbildungen dieses README (aus echten Daten erzeugt)
 artifacts/
 ├── datasets/trend_1h_<COIN>.pkl       1h-Cache (nicht in Git)
 └── state/trend_pool_*.json            Wochenauswahl, Positionen (nicht in Git)
