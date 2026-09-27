@@ -1,398 +1,284 @@
-# oraclebot — Trend-Pool (Zwei-Ebenen-Renko, wöchentliche Auswahl)
+# oraclebot — Trend-Pool
 
 ![Status](https://img.shields.io/badge/status-live-brightgreen)
-![Strategie](https://img.shields.io/badge/strategie-trend--pool-blueviolet)
-![Coins](https://img.shields.io/badge/pool-23%20Coins%20%C2%B7%201564%20Strategien-orange)
+![Strategie](https://img.shields.io/badge/strategie-zwei--ebenen--renko-blueviolet)
+![Pool](https://img.shields.io/badge/pool-23%20Coins%20%C2%B7%201564%20Strategien-orange)
+![Auswahl](https://img.shields.io/badge/auswahl-w%C3%B6chentlich%20Top%205-yellow)
 ![Hebel](https://img.shields.io/badge/hebel-3x%20isolated-red)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
-## Stand 2026-09-27: Trend-Pool ersetzt die Renko-Echtzeit-Strategie
+oraclebot handelt Trends mit Renko-Bricks auf zwei Ebenen. Große Bricks geben die Trendrichtung vor, kleine
+1h-Bricks bestimmen den Einstieg. Aus einem Pool von 1.564 solcher Strategien (23 Coins × Zeitrahmen ×
+Brick-Größe × Einstiegsart) wählt der Bot jeden Montag die 5 aus, die in den letzten 4 Wochen am besten
+gelaufen sind, und handelt nur diese.
 
-Die bisherige 5m-Renko-Breakout-Strategie (alles ab „Grundidee“ weiter unten) ist **stillgelegt**
-(`renko_breakout_settings.enabled=false`). Ihr Backtest-Gewinn kam aus Fills zu Brick-Kanten, die real nie
-erreichbar waren; mit echten Preisen verliert sie (live 23 % Winrate).
-
-**Trend-Pool:** 1.564 Strategien = 23 Coins × Trend-Bricks (1h/2h/4h/8h/1 Tag) × Brick-Größe (x1/x1,5/x2/x3)
-× Einstieg (A/B/C: auf 1h-Bricks in Trendrichtung, D: beim Dreher des Trend-Bricks). Ausstieg, sobald der
-Trend-Brick die Richtung wechselt. Jeden Montag werden die besten `top_k` (aktuell 5) Strategien der letzten
-`lookback_weeks` Wochen gewählt (max. 1 je Coin, nur Coins, deren Bitget-Mindestorder in einen Slot passt).
-
-- **Live = Backtest:** `strategy/trend_pool.py` ist die einzige Signalfunktion für Backtest, Portfolio-Simulation
-  und Live. Live baut die Brick-Kette jede Stunde komplett ab `anchor` (2023-01-01) aus einem append-only
-  1h-Cache neu auf; `tests/test_trend_pool.py` prüft, dass das auf abgeschnittener Historie exakt die
-  Backtest-Trades ergibt. Alle Fills am 1h-Kerzenschluss, nie an Brick-Kanten.
-- **Ehrlicher Forschungsstand:** keine Variante hat in den Tests vom 2026-09-27 eine über fremde Coins und
-  Zeiträume stabile Edge gezeigt. Portfolio-Backtest mit 25 USDT (2023-06 bis 2026-09): Standard
-  4W/Top 10/3x → 15,78 USDT, handelt ab Ende 2024 nicht mehr (Slot unter Bitget-Minimum); 4W/Top 5/3x →
-  27,83 USDT bei −74 % Max-Drawdown. Auf ausdrücklichen Wunsch trotzdem mit echtem Geld live.
-
-| Befehl | Zweck |
-|---|---|
-| `.venv/bin/python3 scripts/trend_pool_weekly.py` | Wochenauswahl manuell (der stündliche Lauf erstellt sie zu Beginn jeder UTC-Woche automatisch) |
-| `.venv/bin/python3 scripts/trend_pool_live.py` | Stündlicher Lauf (Cron `:01`): Abgleich, Signale, Orders |
-| `... trend_pool_weekly.py --dry-run` / `trend_pool_live.py --dry-run` | Nur anzeigen, nichts senden/handeln |
-| `.venv/bin/python3 scripts/trend_pool_backtest.py --no-fetch --top-k 5` | Portfolio-Backtest mit den Live-Funktionen |
-| `bash scripts/retire_renko.sh` | Einmalig: alte Renko-Engine stoppen, Watchdog-Cron entfernen, Alt-Positionen schließen |
-
-**Deployment (einmalig nach `update.sh`):**
-
-```bash
-bash scripts/retire_renko.sh                                   # alte Engine stilllegen
-.venv/bin/python3 scripts/trend_pool_weekly.py                 # erster Download (~10 Min) + erste Auswahl
-.venv/bin/python3 scripts/trend_pool_live.py --dry-run         # Kontrolle
-crontab -e
-# 1 * * * * cd /home/<user>/oraclebot && .venv/bin/python3 scripts/trend_pool_live.py >> logs/trend_pool_live.log 2>&1
-```
-
-Sicherheiten: Sicherheits-Stop je Position als Bitget-Trigger (`safety_stop_pct`, Standard 25 % bei 3x),
-Positionsabfragen strikt (API-Fehler → Abbruch statt „Position weg“), kein Handel solange die alte
-Renko-Engine lebt, fremde Positionen auf Pool-Coins werden nicht angefasst, Datencache wirft bei Lücken
-statt still verkürzt weiterzurechnen.
+> **Ehrlicher Forschungsstand (2026-09-27):** In den Tests vor dem Start hat keine Variante eine über fremde
+> Coins und Zeiträume stabile Edge gezeigt. Der Portfolio-Backtest mit 25 USDT (2023-06 bis 2026-09) endet
+> mit der aktuellen Einstellung bei 27,83 USDT, aber mit −74 % größtem Rückgang zwischendurch. Der Bot läuft
+> auf ausdrücklichen Wunsch trotzdem mit echtem Geld. Details unter [Forschungsstand](#forschungsstand).
 
 ---
 
-*Ab hier: Dokumentation der stillgelegten Renko-Echtzeit-Strategie (historisch).*
+## Inhalt
 
-## Grundidee
-
-Portfolio-weite Renko-Breakout-Strategie auf sieben Altcoins (NEAR, DOT, SOL, ADA, AVAX, SUI,
-XRP). Baut Entropy-Adaptive-Renko-Bricks (EAR, portiert aus `zerobot`) — Bricks entstehen
-preisbasiert, nicht zeitbasiert, Brick-Größe passt sich dynamisch an die aktuelle Marktentropie
-an. Kein Vorhersage-Modell:
-
-- **Entry**: ein Ausbruch aus einer Seitwärtsphase — `breakout_run` Bricks am Stück in dieselbe
-  Richtung, direkt nach `horizontal_lookback` Bricks gemischter Richtung davor.
-- **Exit**: der erste vollständig ausgebildete Gegen-Brick. Kein festes Take-Profit — die
-  Brick-Struktur selbst definiert das Ende des Trades.
-- **Mehrfach-Positionen**: jedes der 7 Coins handelt komplett UNABHÄNGIG (seit 2026-09-25, siehe
-  unten) — kein gemeinsamer Slot, keine Arbitrierung zwischen Symbolen mehr.
-- **Positionsgröße**: Anti-Martingale (Paroli), EIN gemeinsamer Streak über alle Symbole —
-  Einsatz wächst nach Gewinnserien (unabhängig welches Symbol gewinnt), fällt sofort auf die
-  Basis zurück nach jedem Verlust.
-
-Validiert über 70/30 In-Sample/Out-of-Sample-Split, mit realistischen Kosten (Taker-Gebühren,
-Slippage, echte Bitget-Funding-Historie) und einer Liquidationsprüfung anhand der tatsächlichen
-5m-Kursbewegung (nicht nur der Brick-Schlusskurse) gegen die echten, symbolspezifischen
-Bitget-Wartungsmargen.
-
-**Läuft live in Echtzeit (WebSocket), nicht mehr per Cron-Polling** — siehe
-["Warum Echtzeit-Ausführung"](#warum-echtzeit-ausführung-statt-cron-polling) unten. Das war keine
-Optimierung, sondern die Voraussetzung dafür, dass die Strategie überhaupt eine Edge hat.
-
-### 🧱 Anatomie eines Trades
-
-```
-Seitwärtsphase (horizontal_lookback = 6 gemischte Bricks)      Breakout        Haltephase           Exit
-        🟩 🟥 🟩 🟩 🟥 🟥            →       🟩 🟩       →     (bis Gegen-Brick)  →      🟥
-                                        breakout_run = 2                              1. Gegen-Brick
-                                        ENTRY 🚀 LONG                                 EXIT 🏁
-```
-
-Keine Vorhersage, kein Take-Profit-Ziel — der Chart selbst sagt, wann rein und wann raus.
+- [So entsteht ein Trade](#so-entsteht-ein-trade)
+- [Die vier Einstiegsarten](#die-vier-einstiegsarten)
+- [Der Pool](#der-pool)
+- [Wöchentliche Auswahl](#wöchentliche-auswahl)
+- [Stündlicher Live-Lauf](#stündlicher-live-lauf)
+- [Live = Backtest](#live--backtest)
+- [Positionsgröße und Risiko](#positionsgröße-und-risiko)
+- [Forschungsstand](#forschungsstand)
+- [Befehlsübersicht](#befehlsübersicht)
+- [Installation](#installation)
+- [VPS-Betrieb](#vps-betrieb)
+- [Einstellungen](#einstellungen)
+- [Architektur](#architektur)
+- [Fallstricke, die schon einmal passiert sind](#fallstricke-die-schon-einmal-passiert-sind)
+- [Historie](#historie)
 
 ---
 
-## 📋 Befehlsübersicht (Cheat Sheet)
+## So entsteht ein Trade
 
-Alle Pfade relativ zum `oraclebot`-Wurzelverzeichnis. Auf dem VPS mit `.venv/bin/python3`.
+Renko-Bricks entstehen nicht nach Zeit, sondern nach Preisbewegung: Ein neuer Brick bildet sich, wenn der
+Schlusskurs eine Brick-Größe weiter läuft. Eine Richtungsumkehr braucht zwei Brick-Größen. Die Brick-Größe
+passt sich an die Marktunruhe an (EAR: Entropy-Adaptive Renko, `data/ear_bricks.py`).
 
-**🛠️ Setup**
-| Befehl | Zweck |
-|---|---|
-| `bash ./install.sh` | Venv anlegen, Requirements installieren, Root-Skripte ausführbar machen |
-| `cp secret.json.example secret.json && nano secret.json` | API-Keys + Telegram konfigurieren |
-
-**🧪 Tests & Verifikation**
-| Befehl | Zweck |
-|---|---|
-| `./run_tests.sh` | Komplette Testsuite, venv-sicher (empfohlen) |
-| `.venv/bin/python3 scripts/run_renko_realtime.py --dry-run` | Echte WebSocket-Daten + Signal-Logik live beobachten, **keine Orders** |
-
-**▶️ Live-Betrieb steuern**
-| Befehl | Zweck |
-|---|---|
-| `crontab -e` → `* * * * * .../scripts/watchdog_renko.sh` | Dauerbetrieb einrichten (Standard-Deployment) |
-| `.venv/bin/python3 scripts/run_renko_realtime.py` | Manuell im Vordergrund starten (nur zum Debuggen) |
-| `kill $(cat artifacts/state/renko_realtime.pid)` | Prozess beenden — der Watchdog startet ihn danach automatisch neu! |
-| Cronjob-Zeile entfernen **+** `kill $(cat artifacts/state/renko_realtime.pid)` | Bot **vollständig** stoppen |
-| `enabled: false` in `settings.json` + `git push` + `./update.sh` | Soft-Pause: keine neuen Entries, offene Position(en) laufen bis Exit weiter |
-
-**📊 Zustand & Monitoring**
-| Befehl | Zweck |
-|---|---|
-| `tail -f logs/cron_renko.log` | Live-Log mitverfolgen |
-| `grep -i "ERROR" logs/cron_renko.log` | Fehler im Log finden |
-| `ps aux \| grep run_renko_realtime` | Läuft der Prozess? |
-| `cat artifacts/state/renko_realtime.pid` | Vom Watchdog überwachte PID |
-| `cat artifacts/state/renko_realtime_positions.json` | Aktuell offene Position(en) je Symbol (mehrere gleichzeitig möglich) |
-| `cat artifacts/state/renko_realtime_anti_martingale.json` | Aktueller Einsatz-Prozentsatz |
-| `crontab -l` | Cronjobs anzeigen |
-
-**🎨 Illustration**
-| Befehl | Zweck |
-|---|---|
-| siehe [Illustration eines Trades](#illustration-eines-trades-ansehen) | Interaktive Plotly-HTML-Chart eines Trades erzeugen |
-
-**🔄 Update & Deployment**
-| Befehl | Zweck |
-|---|---|
-| `./update.sh` | Neueste Version ziehen (sichert & stellt `secret.json` wieder her) |
-| `git remote set-url origin git@github.com:Youra82/oraclebot.git` | HTTPS → SSH umstellen (behebt Passwort-Abfrage bei `update.sh`) |
-| `ssh -T git@github.com` | SSH-Key-Verbindung zu GitHub testen |
-
----
-
-## Architektur
+oraclebot nutzt zwei Ebenen gleichzeitig:
 
 ```
-scripts/
-├── run_renko_realtime.py              AKTUELLER Live-Prozess: dauerhaft laufend, WebSocket-getrieben
-├── watchdog_renko.sh                  Cron-Wächter: startet run_renko_realtime.py neu, falls er nicht läuft
-└── run_renko_breakout.py              LEGACY: 5-Minuten-Cron-Variante, nicht mehr im Live-Einsatz
-                                        (siehe Abschnitt zur Ausführungs-Verzögerung) -- Code bleibt
-                                        als Referenz/für Backtests erhalten, wird nicht mehr deployt
-src/oraclebot/
-├── data/ear_bricks.py                 EAR-Brick-Konstruktion (Shannon-Entropie, inkrementell fortsetzbar)
-├── strategy/
-│   ├── horizontal_breakout_signal.py  Entry/Exit-Logik auf einer Brick-Kette (unverändert für Cron+Echtzeit)
-│   ├── renko_portfolio_state.py       Live-Zustand je Symbol (persistierte Brick-Kette, kein Neuaufbau)
-│   ├── renko_live_trade.py            Order-Ausführung (Entry + Sicherheits-Stop, Exit)
-│   └── anti_martingale.py             Positionsgrößen-Logik (Paroli)
-├── analysis/
-│   ├── renko_live_signal_check.py     Täglicher Konsistenzcheck -- nur für die alte Cron-Variante relevant
-│   └── renko_chart.py                 Interaktive Brick-Chart-Illustration (Plotly)
-└── utils/
-    ├── bitget_ws.py                   Roher WebSocket-Client für Bitgets öffentlichen Trade-Kanal
-    ├── realtime_bars.py               Aggregiert Trade-Ticks zu OHLCV-Bars (Groesse = brick_timeframe, 5m)
-    ├── exchange.py                    Bitget-Wrapper (ccxt)
-    ├── data_fetch.py                  OHLCV-Fetch inkl. Live-Cache (nur noch für Cold-Start-Warmup)
-    ├── periodic_gate.py               Zeitfenster+Marker-Gate (für den alten täglichen Konsistenzcheck)
-    ├── telegram.py                    Benachrichtigungen
-    └── config.py                      settings.json laden
+Trend-Ebene (z. B. 4h-Bricks)   🟥  🟥  🟩  🟩  🟩  🟩  🟩  🟩  🟥 🟥
+                                        └── Trend: LONG ─────────────┘  └ Dreher → Ausstieg
+
+Einstiegs-Ebene (1h-Bricks)     🟩 🟥 🟥 🟩 🟩 🟩 🟩 🟥 🟥 🟩 🟩 🟩 🟩 🟩 🟩 🟥 🟥 🟥
+                                        ▲                                 ▲
+                                     Einstieg LONG                      Ausstieg
+                                (Rücksetzer vorbei,                (4h-Brick dreht auf Rot)
+                                 Trend ist grün)
 ```
 
-Die Entry-/Exit-/Order-Logik selbst (`horizontal_breakout_signal.py`, `renko_live_trade.py`,
-`anti_martingale.py`) ist zwischen der alten Cron-Variante und der aktuellen Echtzeit-Variante
-**identisch** — nur die Datenquelle und der Takt, mit dem neue Bricks entstehen, haben sich
-geändert.
-
-### Datenfluss (Echtzeit-Pipeline)
+- **Trend:** die Richtung des letzten großen Bricks (2h, 4h, 8h oder 1 Tag). Grün heißt nur Long, rot nur Short.
+- **Einstieg:** auf 1h-Bricks, nur in Trendrichtung (Varianten A, B, C) oder direkt beim Dreher des großen
+  Bricks (Variante D).
+- **Ausstieg:** sobald der große Brick die Richtung wechselt. Kleine Gegen-Bricks auf 1h werden ignoriert.
+- **Preise:** Ein- und Ausstieg immer zum **echten Schlusskurs der 1h-Kerze**, in der das Signal feststeht,
+  nie zu einer Brick-Kante (siehe [Historie](#historie), warum das entscheidend ist).
 
 ```mermaid
 flowchart LR
-    A(["🌐 Bitget WebSocket<br/>Trade-Ticks"]):::io --> B["⏱️ 5m Bar-Aggregator<br/>realtime_bars.py"]:::proc
-    B --> C["🧱 EAR-Brick-Builder<br/>ear_bricks.py"]:::proc
-    C --> D{"📈 Breakout-<br/>Signal?"}:::decision
-    D -- "nein, weiter sammeln" --> C
-    D -- "ja" --> F["💰 Entry +<br/>Sicherheits-Stop"]:::action
-    F --> G["🚪 Exit beim<br/>1. Gegen-Brick"]:::action
-    F --> H["📲 Telegram"]:::io
-    G --> H
+    T["🧱 großer Brick<br/>(2h / 4h / 8h / 1 Tag)"]:::trend --> R{"Richtung?"}:::dec
+    R -- grün --> L["nur LONG"]:::long
+    R -- rot --> S["nur SHORT"]:::short
+    L --> E["⏱️ 1h-Bricks:<br/>Einstiegsmuster A / B / C<br/>oder D = sofort beim Dreher"]:::proc
+    S --> E
+    E --> P["💰 Position zum<br/>1h-Schlusskurs"]:::act
+    P --> X["🚪 Ausstieg, wenn der<br/>große Brick dreht"]:::act
 
-    classDef io fill:#4A90D9,stroke:#2C5F8A,color:#fff
-    classDef proc fill:#F5A623,stroke:#B8791A,color:#fff
-    classDef decision fill:#7ED321,stroke:#5AA017,color:#000
-    classDef action fill:#D0021B,stroke:#8E0113,color:#fff
+    classDef trend fill:#6C5CE7,color:#fff
+    classDef dec fill:#7ED321,color:#000
+    classDef long fill:#1f9e8f,color:#fff
+    classDef short fill:#e5534f,color:#fff
+    classDef proc fill:#F5A623,color:#000
+    classDef act fill:#4A90D9,color:#fff
 ```
 
-### Mehrfach-Positionen (7 Coins, 7 unabhängige Positions-Slots)
+---
+
+## Die vier Einstiegsarten
+
+| Einstieg | Wann der Bot einsteigt | Skizze (Trend grün) |
+|---|---|---|
+| **A** | Nach einem Rücksetzer (mind. ein 1h-Brick gegen den Trend) beim **ersten** 1h-Brick zurück in Trendrichtung | `🟩 🟥 🟥 🟩▲` |
+| **C** | Wie A, aber erst beim **zweiten** 1h-Brick zurück in Trendrichtung | `🟩 🟥 🟥 🟩 🟩▲` |
+| **B** | Ausbruch: **6 gemischte** 1h-Bricks (Seitwärtsphase), danach **2 in Folge** in Trendrichtung | `🟩 🟥 🟩 🟥 🟥 🟩 · 🟩 🟩▲` |
+| **D** | **Sofort beim Dreher des großen Bricks.** Beim nächsten Dreher raus und direkt in die Gegenrichtung (immer im Markt) | `🟥 🟥 🟩▲` (große Bricks) |
+
+`▲` = Einstieg. Bei rotem Trend gilt alles spiegelbildlich für Short.
+
+---
+
+## Der Pool
+
+| | Werte |
+|---|---|
+| **Coins (23)** | AAVE, ADA, APT, ARB, ATOM, AVAX, BCH, BNB, BTC, DOGE, DOT, ETH, FIL, INJ, LINK, LTC, NEAR, OP, SOL, SUI, TRX, UNI, XRP |
+| **Trend-Bricks für A/B/C** | 2h, 4h, 8h, 1 Tag |
+| **Trend-Bricks für D** | 1h, 2h, 4h, 8h, 1 Tag |
+| **Brick-Größe** | x1, x1,5, x2, x3 (relativ zur Grundgröße des Coins) |
+| **Strategien je Coin** | 4 × 4 × 3 (A/B/C) + 5 × 4 (D) = **68** |
+| **Pool gesamt** | 23 × 68 = **1.564** |
+
+Eine Strategie heißt z. B. `APT|1D|3|B`: Coin APT, Trend-Bricks auf 1 Tag, Brick-Größe x3, Einstieg B.
+
+Die Grundgröße der Bricks ist je Coin fest in `settings.json` hinterlegt (`base_pct_1h_by_coin`). Sie wurde so
+kalibriert, dass alle Coins ungefähr gleich oft Bricks bilden. Die Werte sind bewusst ungerundet: Renko-Ketten
+sind pfadabhängig, schon eine Rundung in der 7. Stelle verändert spätere Trades.
+
+---
+
+## Wöchentliche Auswahl
+
+Jeden Montag 00:01 UTC (automatisch durch den ersten stündlichen Lauf der neuen Woche):
 
 ```mermaid
-flowchart LR
-    N["NEAR"]:::c1 --> NT(("eigene<br/>Position")):::c1
-    D["DOT"]:::c2 --> DT(("eigene<br/>Position")):::c2
-    S["SOL"]:::c3 --> ST(("eigene<br/>Position")):::c3
-    A["ADA"]:::c4 --> AT(("eigene<br/>Position")):::c4
-    V["AVAX"]:::c5 --> VT(("eigene<br/>Position")):::c5
-    U["SUI"]:::c6 --> UT(("eigene<br/>Position")):::c6
-    X["XRP"]:::c7 --> XT(("eigene<br/>Position")):::c7
+flowchart TD
+    A["📥 1h-Kerzen aller 23 Coins<br/>aktualisieren"]:::io --> B["🧮 alle 1.564 Strategien<br/>über die ganze Historie rechnen"]:::proc
+    B --> C["📊 Score je Strategie =<br/>Summe der Trade-Ergebnisse,<br/>die in den letzten 4 Wochen<br/>abgeschlossen wurden"]:::proc
+    C --> D{"Coin handelbar?<br/>Bitget-Mindestorder<br/>passt in einen Slot"}:::dec
+    D -- nein --> Z["❌ raus<br/>(z. B. ETH bei ~26 USDT)"]:::no
+    D -- ja --> E["🏆 Top 5 mit Score > 0,<br/>höchstens 1 je Coin"]:::act
+    E --> F["💾 trend_pool_selection.json<br/>+ 📲 Telegram"]:::io
 
-    classDef c1 fill:#E74C3C,color:#fff
-    classDef c2 fill:#E67E22,color:#fff
-    classDef c3 fill:#F1C40F,color:#000
-    classDef c4 fill:#2ECC71,color:#fff
-    classDef c5 fill:#1ABC9C,color:#fff
-    classDef c6 fill:#3498DB,color:#fff
-    classDef c7 fill:#9B59B6,color:#fff
+    classDef io fill:#4A90D9,color:#fff
+    classDef proc fill:#F5A623,color:#000
+    classDef dec fill:#7ED321,color:#000
+    classDef act fill:#1f9e8f,color:#fff
+    classDef no fill:#e5534f,color:#fff
 ```
 
-Jedes Symbol handelt komplett unabhängig — kein gemeinsamer Slot mehr, um den konkurriert werden
-könnte (siehe [Warum Mehrfach-Positionen](#warum-mehrfach-positionen-statt-ein-slot-arbitrierung)
-unten für den Grund).
+- Nur **abgeschlossene** Trades vor Montag 00:00 UTC zählen. Das ist dieselbe Information, die auch der
+  Backtest zu diesem Zeitpunkt hätte.
+- Eine abgewählte Strategie behält ihre offene Position bis zu deren eigenem Ausstieg, eröffnet aber keine neue.
+- Die ausgewählten Strategien eröffnen nur Trades, die **in dieser Woche beginnen**. Ein Trend, der schon vor
+  Montag lief, wird nicht nachträglich betreten.
 
 ---
 
-## Warum Echtzeit-Ausführung statt Cron-Polling
+## Stündlicher Live-Lauf
 
-**Fund 2026-09-23, der wichtigste dieser Strategie:** nach der ersten Live-Aktivierung (5-Minuten-
-Cron, `run_renko_breakout.py`) lag die echte Live-Winrate bei 18.5% (5 von 27 Trades) gegenüber
-~55–77% im Backtest — statistisch praktisch ausgeschlossen als Zufall (p≈0.01%).
+`scripts/trend_pool_live.py`, jede Stunde in Minute 1:
 
-Der Abgleich echter VPS-Logs gegen echte Bitget-Fill-Daten zeigte die Ursache: eine konsistente
-**~6.5 Minuten Verzögerung** zwischen dem Entstehen eines Brick-Signals und der tatsächlichen
-Order-Ausführung (5-Minuten-Cron-Takt + Verarbeitungszeit). Da die Strategie in Ausbruchsrichtung
-handelt, läuft der Preis in dieser Wartezeit systematisch weiter — man jagt dem Ausbruch hinterher,
-statt ihn zu erwischen.
+```mermaid
+flowchart TD
+    S(["⏰ Cron :01"]):::cron --> R["🔄 Abgleich mit Bitget<br/>(strikt: API-Fehler = Abbruch)"]:::proc
+    R --> W{"neue UTC-Woche?"}:::dec
+    W -- ja --> SEL["🏆 neue Wochenauswahl"]:::act
+    W -- nein --> SIG
+    SEL --> SIG["🧮 Signale der ausgewählten +<br/>gehaltenen Strategien rechnen"]:::proc
+    SIG --> DEC["⚖️ decide_actions():<br/>schließen / eröffnen"]:::proc
+    DEC --> C["🚪 Positionen schließen"]:::act
+    DEC --> O["💰 Positionen eröffnen<br/>+ Sicherheits-Stop"]:::act
+    C --> TG["📲 Telegram"]:::io
+    O --> TG
 
-Ein systematischer Lag-Sensitivitäts-Backtest-Sweep bestätigte: das ist eine **Klippe, kein
-sanfter Abfall**:
+    classDef cron fill:#9013FE,color:#fff
+    classDef dec fill:#7ED321,color:#000
+    classDef proc fill:#F5A623,color:#000
+    classDef act fill:#1f9e8f,color:#fff
+    classDef no fill:#e5534f,color:#fff
+    classDef io fill:#4A90D9,color:#fff
+```
 
-| Verzögerung Signal → Order | OOS-Ergebnis | |
+Ist eine Position an der Börse nicht mehr offen (Sicherheits-Stop, manuell geschlossen), wird sie aus dem
+Zustand entfernt und derselbe Trade nicht erneut eröffnet. Positionen auf Pool-Coins, die nicht vom Bot
+stammen, werden nicht angefasst; der Coin wird dann übersprungen.
+
+---
+
+## Live = Backtest
+
+Die wichtigste Regel dieses Bots: Backtest und Live dürfen nicht auseinanderlaufen können.
+
+| Baustein | Datei | Genutzt von |
 |---|---|---|
-| 0 Minuten (Echtzeit) | **+420%** | 🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩 |
-| 1 Minute | **-142%** | 🟥🟥🟥🟥🟥 |
-| 6.5 Minuten (alter 5-Min-Cron) | **-142%** | 🟥🟥🟥🟥🟥 |
+| Signale (Trades einer Strategie) | `strategy/trend_pool.py` | Backtest, Portfolio-Simulation, Wochenauswahl, Live |
+| Wochenauswahl | `strategy/trend_pool_select.py` | Portfolio-Simulation, Live |
+| Ein-/Ausstiegsentscheidung | `strategy/trend_pool_decide.py` | Portfolio-Simulation, Live |
+| 1h-Kerzen | `utils/ohlcv_cache.py` | alles |
 
-Egal ob 1 oder 6.5 Minuten Lag — sobald die exakte Signal-Kerze verpasst wird, ist die Edge
-komplett weg. Kein Cron-Takt (auch kein 1-Minuten-Takt) kann das strukturell lösen, weil eine
-Kerze per Definition erst NACH ihrem Abschluss sichtbar wird.
-
-**Fix:** kompletter Wechsel von Cron-Polling auf einen dauerhaft laufenden, WebSocket-getriebenen
-Prozess (`scripts/run_renko_realtime.py`):
-
-- `utils/bitget_ws.py` verbindet sich direkt mit Bitgets öffentlichem Trade-Kanal
-  (`wss://ws.bitget.com/v2/ws/public`) und empfängt echte Trade-Ticks in Echtzeit.
-- `utils/realtime_bars.py` aggregiert diese Ticks zu Bars — **exakt `brick_timeframe` groß
-  (5 Minuten), nicht feiner** (siehe Zwischenfall unten). Die Brick-Engine bekommt dieselbe
-  Eingabe-Granularität wie der Backtest, nur der Moment des Reagierens ändert sich.
-- Ein Live-Test mit echtem Geld (2026-09-23) bestätigte die Reaktionszeit direkt: das erste
-  Entry-Signal kam 6 Sekunden nach dem WebSocket-Connect, mit einem Zeitstempel, der NICHT auf dem
-  5-Minuten-Raster des alten Crons lag — der Beweis, dass die Echtzeit-Reaktion tatsächlich greift.
-
-### Zwischenfall: die erste Version verfälschte die Strategie selbst (gefixt 2026-09-24)
-
-Die allererste Version dieses Fixes aggregierte den Tick-Strom zu **5-Sekunden**-Bars statt zu
-5-Minuten-Bars — in der Annahme, "feiner = genauer". Das war ein Fehler: `build_ear_bricks()`
-schaut nur auf den **Schlusskurs** jeder eingehenden Kerze (nie auf High/Low), und 60x mehr
-Schlusskurse pro Zeiteinheit lassen 60x mehr — überwiegend Rausch-getriebene — Bricks entstehen.
-Das ist keine schnellere Version derselben Strategie, sondern eine strukturell ANDERE, nie
-backgetestete Strategie.
-
-Ein 24-Stunden-Live-Vergleich (2026-09-24, 17 echte Trades) zeigte das Muster deutlich: fast
-doppelt so viele Trades wie eine frische 5-Minuten-Backtest-Rekonstruktion desselben Fensters
-(17 vs. 9), Winrate 29% statt ~67%. Ein direkter 5m-vs-1m-Granularitätstest (identische Parameter,
-nur die Eingabe-Auflösung geändert) bestätigte den Mechanismus unabhängig: schon bei nur 12x
-feinerer Abtastung stiegen Signalzahl und -rauschen spürbar.
-
-**Fix:** die Brick-Engine bekommt weiterhin ausschließlich echte, abgeschlossene 5-Minuten-Bars
-(auf ganze 5-Minuten-Fenster ausgerichtet, exakt wie echte Bitget-5m-Kerzen) — der WebSocket-
-Tick-Strom wird nur genutzt, um den Moment, in dem ein 5-Minuten-Fenster abschließt, in Sekunden
-statt Minuten zu erkennen. Die Signal**definition** bleibt identisch zum Backtest, nur die
-Reaktions**geschwindigkeit** auf ihr Eintreten ändert sich — genau das war von Anfang an der
-Plan, wurde in der ersten Umsetzung aber mit der Granularität der Brick-Bildung selbst vermischt.
-
-**Ehrlich offene Unsicherheit:** selbst mit dem Fix bleibt eine Rest-Verzögerung von wenigen
-Sekunden (Bar-Abschluss-Erkennung + Netzwerk + Order-Ausführung) gegenüber einem theoretischen
-0-Lag-Idealfall. Ob das noch relevant ist, zeigt sich erst über echte Live-Ergebnisse über einen
-längeren Zeitraum nach diesem Fix.
+- **Eine Kette ab festem Start:** Live baut die Brick-Kette jede Stunde komplett neu, immer ab
+  `anchor = 2023-01-01`, aus einem Cache, der nur wächst und nie überschrieben wird. Renko-Ketten sind
+  pfadabhängig; so sieht Live exakt dieselbe Kette wie der Backtest.
+- **Nur abgeschlossene Kerzen:** Die laufende Kerze kommt nie in den Cache, und der große Trend-Brick
+  berücksichtigt nur bereits geschlossene Kerzen seines Zeitrahmens.
+- **Getestet:** `tests/test_trend_pool.py` rechnet die Signale auf abgeschnittener Historie (so wie Live zu
+  jeder Stunde) und prüft, dass sie exakt dem vollen Backtest bis zu diesem Zeitpunkt entsprechen. Ein
+  zweiter Test prüft, dass jeder Fill ein echter Kerzenschlusskurs ist.
+- **Reproduziert:** Das Modul ergibt für 1.560 der 1.564 Forschungs-Strategien Trade für Trade dieselben
+  Ergebnisse wie die Forschungsskripte. Die übrigen 4 weichen um je einen Trade ab (fehlende 1h-Kerze genau an
+  einer Zeitrahmen-Grenze); dort gilt das Modul, weil es sich wie Live verhält.
 
 ---
 
-## Warum Mehrfach-Positionen statt Ein-Slot-Arbitrierung
+## Positionsgröße und Risiko
 
-**Fund 2026-09-25:** auch nach dem Granularitäts-Fix blieb eine Live-vs-Backtest-Lücke bestehen
-(50% Live-Winrate über 16 echte Trades vs. ~72–73% in einer großen, sauberen Backtest-Referenz
-über 150+ Trades). Direkte Untersuchung fand die Ursache: am 2026-09-24 08:20:00 UTC
-signalisierten SOL **und** ADA unabhängig voneinander einen echten Ausbruch in derselben
-5-Minuten-Kerze — ein echter Gleichstand, kein Kaskadeneffekt, empirisch bestätigt. Bei der alten
-"ein Slot für 7 Coins"-Arbitrierung entscheidet in so einem Fall live die tatsächliche
-WebSocket-Tick-Ankunftsreihenfolge (Netzwerk-Timing) — nicht reproduzierbar von keinem Backtest.
-~25–30% aller Trades im 28-Tage-Fenster sind ein solcher echter Gleichstand.
+```
+Slot-Marge   = Gesamtkapital / top_k            26 USDT / 5  ≈ 5,2 USDT
+Positionsgröße = Slot-Marge × Hebel             5,2 × 3     ≈ 15,7 USDT
+Sicherheits-Stop = 25 % Gegenlauf               (Liquidation bei 3x erst bei ~33 %)
+```
 
-Drei Versuche, den Gleichstand über eine *bessere Regel* aufzulösen, statt die Ursache zu
-beseitigen, scheiterten alle an der Out-of-Sample-Prüfung:
+| Regel | Wert |
+|---|---|
+| Hebel | 3x, isolated |
+| Positionen je Coin | höchstens 1 |
+| Sicherheits-Stop | 25 % gegen die Position, als Bitget-Trigger (nur Notbremse; regulärer Ausstieg ist der Trend-Dreher) |
+| Mindestorder | Coins, deren Bitget-Mindestorder größer ist als ein Slot, werden bei der Auswahl übersprungen |
+| Zu wenig Kapital | Liegt ein Slot unter 5 USDT (bei Top 5 unter ~8,3 USDT Kapital), kann der Bot nicht mehr handeln |
 
-| Kandidat | IS-Ergebnis | OOS-Ergebnis |
-|---|---|---|
-| Trailing-Exit (frühzeitiger Ausstieg nach N Bricks Gewinn) | schlechter als Baseline | schlechter als Baseline |
-| Teil-Gewinnmitnahme (Bruchteil der Position früh sichern) | schlechter als Baseline | schlechter als Baseline |
-| Momentum-Arbitrierung (stärkste Kursbewegung gewinnt den Gleichstand) | **besser** als Baseline (+132.82% vs. +120.11%) | **schlechter** als Baseline (+102.14% vs. +121.95%) |
-
-Die Momentum-Regel ist das Lehrbuchbeispiel für Overfitting: sieht auf begrenzten Daten
-überzeugend aus, bricht bei der Gegenprobe ein — in diesem Gleichstand steckt keine
-ausnutzbare Information.
-
-**Strukturelle Lösung statt Regel-Bastelei:** wenn es keinen gemeinsamen Slot mehr gibt, um den
-konkurriert werden könnte, gibt es auch keinen Live-Zufall mehr, der vom Backtest abweichen kann.
-Jedes der 7 Symbole handelt seitdem komplett unabhängig (eigener Positions-Zustand je Symbol,
-`open_renko_position()`/`close_renko_position()` bemessen die Größe automatisch korrekt am
-FREIEN — nicht am gesamten — Guthaben). Sauber mit echter Kapital-/Gebühren-Simulation über 28
-UND 90 Tage (jeweils IS+OOS) validiert, bevor der Code umgebaut wurde:
-
-| | Trades | Winrate | Endkapital (28→) | Max Drawdown |
-|---|--:|--:|--:|--:|
-| Mehrfach-Positionen — 28 Tage IS/OOS | 1436 / 963 | 57.7% / 59.7% | +932% / +694% | 1.6% / 0.9% |
-| Ein-Slot (alt) — 28 Tage IS/OOS | 223 / 157 | 57.8% / 61.1% | +47% / +47% | 0.9% / 0.8% |
-| Mehrfach-Positionen — 90 Tage IS/OOS | 3556 / 2370 | 55.1% / 57.9% | +17078% / +7304% | 2.4% / 1.7% |
-| Ein-Slot (alt) — 90 Tage IS/OOS | 559 / 378 | 49.0% / 56.6% | +131% / +86% | 2.4% / 0.8% |
-
-Mehrfach-Positionen schlägt Ein-Slot konsistent über zwei verschiedene Zeitfenster, IS und OOS,
-bei ÄHNLICHEM oder niedrigerem Max-Drawdown trotz bis zu 7x mehr gleichzeitigem Kapitaleinsatz —
-der Diversifikationseffekt über mehrere, nicht perfekt korrelierte Positionen kompensiert das
-höhere Einzelrisiko. Die Endkapital-Prozentzahlen über 90 Tage sind ein reines Compounding-
-Artefakt (3556 Trades, ständig reinvestiert) und nicht als realistische Erwartung zu lesen — die
-eigentlich belastbaren Signale sind Drawdown und Winrate-Stabilität über beide Zeitfenster.
-
-Macht oraclebot damit auch strukturell ähnlicher zu `zerobot`: dort läuft jedes Symbol/Timeframe
-bereits seit jeher als eigenständiger Prozess, ohne gemeinsamen Slot.
-
-**Anti-Martingale bei Mehrfach-Positionen:** EIN gemeinsamer Streak fürs ganze Portfolio (nicht
-pro Symbol) — welcher Trade zuerst schließt, aktualisiert den Streak zuerst. Die frühere
-Gewinn/Verlust-Erkennung über einen Kontostand-Vorher/Nachher-Vergleich funktionierte nur, weil
-garantiert genau eine Position gleichzeitig offen war; bei mehreren gleichzeitig offenen
-Positionen bewegen mehrere Trades den Kontostand gleichzeitig, der Trick wird uneindeutig.
-Ersetzt durch direkte Gewinn/Verlust-Erkennung am echten Fuellpreis der Order (bzw. an der echten
-Positions-Historie, falls die Position extern geschlossen wurde, z.B. durch den
-Sicherheits-Stop) — siehe `strategy/anti_martingale.py`.
+Die Grenze ist real: Im Backtest blieb die Einstellung Top 10 ab Ende 2024 stehen, weil das Kapital unter die
+Schwelle fiel. Deshalb läuft der Bot mit Top 5.
 
 ---
 
-### Warum die Brick-Kette live nicht einfach neu aufgebaut wird
+## Forschungsstand
 
-Direkt aus einem dokumentierten `zerobot`-Vorfall übernommen: dort baute der Live-Betrieb die
-EAR-Brick-Kette über ein rollierendes Fenster, der Backtest dagegen über eine durchgehende Kette
-— beide wichen strukturell voneinander ab. `renko_portfolio_state.py` setzt die Kette stattdessen
-inkrementell fort (persistierter Kerzen-Puffer + `precomputed_H_roll` für die Entropie-Glättung
-an der Nahtstelle) — getestet gegen einen kompletten Neuaufbau (`test_incremental_batches_match_one_shot_build`).
+Alle Zahlen aus den Tests vom 2026-09-27, mit echten Kerzenschlusskursen, Gebühren, Slippage und Funding.
 
-Der alte tägliche Konsistenzcheck (`analysis/renko_live_signal_check.py`) verglich dazu regelmäßig
-einen frischen 5m-REST-Neuaufbau gegen den Live-Zustand. **Dieser Check läuft im aktuellen
-Echtzeit-Prozess (noch) nicht automatisch mit.** Seit dem Granularitäts-Fix (siehe oben) baut
-der Echtzeit-Prozess Bricks aus derselben 5-Minuten-Größe wie der REST-Neuaufbau — der Check wäre
-jetzt technisch sinnvoll anwendbar (anders als bei der ursprünglichen 5-Sekunden-Variante), ist
-aber bewusst nicht verdrahtet: das war nicht Teil dieses Fixes und braucht eine eigene
-Entscheidung. Die Absicherung gegen die zerobot-Fehlerklasse bleibt bis dahin über einen Unit-Test
-bestehen (`test_incremental_batches_match_one_shot_build`).
+**Portfolio-Backtest mit 25 USDT, 2023-06 bis 2026-09**, mit denselben Funktionen wie Live
+(`scripts/trend_pool_backtest.py`):
+
+| Rückblick | Top | Hebel | Endkapital | größter Rückgang | Bemerkung |
+|---|---|---|---|---|---|
+| **4 Wochen** | **5** | **3x** | **27,83 USDT** | **−74 %** | **aktive Einstellung** |
+| 4 Wochen | 10 | 3x | 15,78 USDT | −49 % | handelt ab Ende 2024 nicht mehr |
+| 4 Wochen | 10 | 5x | 7,64 USDT | −78 % | |
+| 4 Wochen | 3 | 3x | 3,83 USDT | −92 % | |
+| 2 Wochen | 10 | 3x | 15,71 USDT | −41 % | stoppt früh |
+| 26 Wochen | 10 | 3x | 14,13 USDT | −43 % | stoppt früh |
+
+**Was die Einzeltests gezeigt haben:**
+
+- Die Strategien verdienen in starken Trendphasen und verlieren in Seitwärtsphasen. Über 23 Coins und
+  2023–2026 liegen die besten Varianten nach Kosten bei etwa ±0 % pro Trade.
+- Auf den 7 ursprünglichen oraclebot-Coins sahen fast alle Varianten positiv aus, auf 16 anderen Coins fast
+  alle negativ. Das ist ein Effekt der Coin-Auswahl, keine Edge der Regel.
+- Auswahl nach den letzten Wochen: 26 und 2 Wochen Rückblick negativ, 4 Wochen positiv, aber statistisch
+  nicht belastbar. Auswahl nach Trendstärke war schlechter als der Durchschnitt.
+- Eine Suche nach „20 bestätigten Strategien“ mit weggelegtem Test fand im Kern einen einzigen trendenden Coin
+  (UNI); ohne ihn lag das Ergebnis leicht im Minus.
+
+Das Einsatzrisiko ist also hoch. Beobachte die ersten Wochen genau und vergleiche die echten Trades mit dem
+Backtest (`scripts/trend_pool_backtest.py`).
 
 ---
 
-## Aktuelle Konfiguration
+## Befehlsübersicht
 
-Siehe `_note`-Felder in `settings.json::renko_breakout_settings` für die volle Herleitung jeder
-Zahl. Kurzfassung:
+Alle Befehle im `oraclebot`-Verzeichnis, auf dem VPS mit `.venv/bin/python3`.
 
-| Parameter | Wert | Begründung |
-|---|---|---|
-| Hebel | 20x | Bei 40x lag die reale Liquidationsdistanz (mit den echten, coin-spezifischen Bitget-Wartungsmargen statt einer BTC-Annahme) nur bei ~1.78-2.04% — zu nah am historisch schlechtesten beobachteten Kursausschlag (1.37%). 20x gibt ~3x Puffer. |
-| Sicherheits-Stop | 3.0% | Backstop bei Prozessausfall (kein reguläres Exit-Mittel — der reguläre Exit ist der Gegen-Brick). Muss klar unter der Liquidationsdistanz liegen, sonst wirkungslos. |
-| Einsatz-Basis (Anti-Martingale) | 2.0% | Vom User bewusst gewählter, aggressivster der 3 getesteten Kandidaten (0.5/1.0/2.0%). |
-| `base_pct_brick` | pro Coin kalibriert | Einheitliche Brick-Größe ließ volatilere Coins (NEAR) ~2.75x so oft Bricks bilden wie ruhigere (XRP). Kalibriert auf ~65 Bricks/Tag je Coin (Bisektion nur auf In-Sample). Seit dem Mehrfach-Positionen-Umbau (2026-09-25) konkurrieren Coins nicht mehr um einen gemeinsamen Slot — die frühere NEAR-Schlagseite durch die Arbitrierung entfällt damit strukturell. |
+| Befehl | Zweck |
+|---|---|
+| `.venv/bin/python3 scripts/trend_pool_live.py` | Stündlicher Lauf (normalerweise per Cron) |
+| `.venv/bin/python3 scripts/trend_pool_live.py --dry-run` | Anzeigen, was der Bot jetzt tun würde, **keine Orders** |
+| `.venv/bin/python3 scripts/trend_pool_weekly.py` | Wochenauswahl manuell erstellen + per Telegram schicken |
+| `.venv/bin/python3 scripts/trend_pool_weekly.py --dry-run` | Wochenauswahl nur anzeigen |
+| `.venv/bin/python3 scripts/trend_pool_backtest.py --no-fetch --top-k 5` | Portfolio-Backtest (Optionen: `--start`, `--equity`, `--lookback`, `--leverage`) |
+| `./run_tests.sh` | Testsuite |
+| `tail -f logs/trend_pool_live.log` | Live-Log mitverfolgen |
+| `cat artifacts/state/trend_pool_selection.json` | Aktuelle Wochenauswahl |
+| `cat artifacts/state/trend_pool_positions.json` | Offene Positionen des Bots |
+| `./update.sh` | Neueste Version holen (sichert `secret.json`) |
 
 ---
 
-## Installation 🚀
+## Installation
 
 ```bash
 git clone https://github.com/Youra82/oraclebot.git
 cd oraclebot
-chmod +x install.sh
 bash ./install.sh
-```
-
-Erstellt die virtuelle Python-Umgebung, installiert `requirements.txt`, legt `logs/` an, macht
-alle `.sh`-Skripte im Root-Verzeichnis ausführbar.
-
-```bash
 cp secret.json.example secret.json
 nano secret.json
 ```
@@ -406,204 +292,145 @@ nano secret.json
 }
 ```
 
-`oraclebot`-Keys nur für echtes Live-Trading nötig (`renko_breakout_settings.enabled: true`) —
-für Illustrationen/Charts reicht `telegram` (optional).
+Der erste Lauf lädt die 1h-Kerzen aller 23 Coins ab 2023-01-01 (etwa 20–30 Minuten). Danach kommen pro Stunde
+nur die neuen Kerzen dazu.
+
+```bash
+.venv/bin/python3 scripts/trend_pool_weekly.py            # erster Download + erste Auswahl
+.venv/bin/python3 scripts/trend_pool_live.py --dry-run    # Kontrolle
+```
+
+Im Log muss bei jedem Coin `Luecken im Cache 0` stehen. ARB, INJ und SUI zeigen einige „leere Fenster“: Das
+ist die Zeit vor ihrem Listing.
 
 ---
 
-## VPS-Deployment (aktiv, `enabled: true`)
+## VPS-Betrieb
 
-Läuft seit 2026-09-21 scharf, seit 2026-09-23 über die Echtzeit-Engine statt Cron-Polling.
-`renko_breakout_settings.enabled` ist der globale Kill-Switch.
-
-`run_renko_realtime.py` ist ein **dauerhaft laufender Prozess**, kein periodischer Cron-Job. Er
-wird von einem Watchdog überwacht, der ihn bei einem Absturz/Kill automatisch neu startet.
-
-#### Cronjob (Watchdog, jede Minute)
+Ein einziger Cronjob, im Stil der anderen Bots mit `flock`:
 
 ```cron
-* * * * * /pfad/zu/oraclebot/scripts/watchdog_renko.sh
+# oracleBot  -> Minute 1 (kollidiert nicht mit den */15-Laeufen der anderen Bots)
+1 * * * * /usr/bin/flock -n /home/matola/oraclebot/oraclebot.lock /bin/sh -c "OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 cd /home/matola/oraclebot && /home/matola/oraclebot/.venv/bin/python3 scripts/trend_pool_live.py >> /home/matola/oraclebot/logs/trend_pool_live.log 2>&1"
 ```
 
-`watchdog_renko.sh` prüft über eine PID-Datei (`artifacts/state/renko_realtime.pid`), ob der
-Prozess noch läuft, und startet ihn nur bei Bedarf neu. **Bewusst NICHT über
-`pgrep -f run_renko_realtime.py`**: `pgrep -f` matcht sonst fälschlich die eigene aufrufende
-`sh -c`-Prozesskette, deren Kommandozeile den gesuchten Pattern-Text selbst enthält — der Bot
-würde dadurch nie starten, obwohl der Watchdog bei jedem Tick "läuft schon" meldet (genau dieser
-Bug hat den ersten Deployment-Versuch stundenlang lahmgelegt).
-
-```mermaid
-flowchart TD
-    A["⏰ Cron: jede Minute<br/>watchdog_renko.sh"]:::cron --> B{"📄 PID-Datei da<br/>UND Prozess lebt?"}:::decision
-    B -- ja --> C["✅ nichts tun"]:::ok
-    B -- nein --> D["🚀 nohup run_renko_realtime.py &"]:::action
-    D --> E["💾 neue PID in Datei schreiben"]:::proc
-
-    classDef cron fill:#9013FE,stroke:#5E0BAA,color:#fff
-    classDef decision fill:#7ED321,stroke:#5AA017,color:#000
-    classDef ok fill:#4A90D9,stroke:#2C5F8A,color:#fff
-    classDef action fill:#D0021B,stroke:#8E0113,color:#fff
-    classDef proc fill:#F5A623,stroke:#B8791A,color:#fff
-```
-
-Live end-to-end verifiziert (2026-09-23): laufenden Prozess hart gekillt → Watchdog erkannte den
-Ausfall und startete binnen ~14s neu, WebSocket neu verbunden, direkt danach ein echtes
-Entry-Signal (AVAX SHORT) korrekt und in unter 2 Sekunden ausgeführt.
-
-#### Setup verifizieren / überwachen
-
-```bash
-./run_tests.sh                                                # komplette Testsuite
-.venv/bin/python3 scripts/run_renko_realtime.py --dry-run    # WebSocket+Bricks+Signale live loggen, KEINE Orders
-tail -f logs/cron_renko.log                                  # live mitverfolgen
-ps aux | grep run_renko_realtime                              # laeuft der Prozess?
-cat artifacts/state/renko_realtime.pid                        # aktuell ueberwachte PID
-crontab -l                                                     # Watchdog-Eintrag pruefen
-```
-
-#### Manuell starten (ohne auf den Watchdog zu warten)
-
-```bash
-.venv/bin/python3 scripts/run_renko_realtime.py
-```
-
-Verbindet sich sofort mit dem WebSocket und läuft dauerhaft im Vordergrund (für den echten Betrieb
-über den Watchdog laufen lassen, nicht manuell im Vordergrund). Der allererste Lauf ist ein "Cold
-Start": pro Coin werden erst 3 Tage Warm-up-Historie per REST geholt, bevor Live-Signale aus den
-Echtzeit-Bars entstehen können.
-
-#### Strategie pausieren (Kill-Switch, Soft-Pause)
-
-`renko_breakout_settings.enabled` auf `false`, committen, pushen, `./update.sh` auf dem VPS. Der
-laufende Prozess prüft den Flag alle 60 Sekunden neu und stoppt dann NEUE Entries — bereits
-offene Position(en) werden aber weiter regulär bis zu ihrem jeweiligen Brick-Exit überwacht
-(Soft-Pause, kein hartes Kill). Der Prozess selbst läuft dabei weiter (der Watchdog hält ihn sonst sofort wieder am
-Leben). Für einen vollständigen Stopp: Cronjob-Zeile entfernen (`crontab -e`) UND den laufenden
-Prozess beenden (`kill <PID>` aus `artifacts/state/renko_realtime.pid`).
-
-#### Update auf neue Version
-
-```bash
-./update.sh
-```
-
-Sichert `secret.json` vor `git reset --hard origin/main`, stellt es danach wieder her. Setzt auch
-Ausführungsrechte für `.sh`-Dateien im Root neu — `scripts/watchdog_renko.sh` liegt in einem
-Unterordner und wird davon NICHT erfasst; sein Ausführungsrecht ist stattdessen direkt im
-Git-Index als `100755` hinterlegt (Fund 2026-09-23: von Windows aus committete `.sh`-Dateien
-verlieren sonst ihr Ausführungsrecht, weil Git unter Windows keine Unix-Permission-Bits verfolgt —
-das hätte den Watchdog nach jedem `update.sh` wieder stillgelegt, wäre es nur manuell per `chmod`
-auf dem VPS gefixt worden statt im Repo selbst).
+- Minute 1: Die 1h-Kerze ist geschlossen.
+- Montags um 00:01 UTC dauert der Lauf einige Minuten länger, weil er die Wochenauswahl über alle 1.564
+  Strategien rechnet. Der Zeitpunkt richtet sich nach UTC, nicht nach der Zeitzone des Servers.
+- **Bot stoppen:** Cron-Zeile auskommentieren. Offene Positionen bleiben dann stehen (mit Sicherheits-Stop)
+  und müssen auf Bitget manuell geschlossen werden.
+- **Pausieren ohne Stopp:** `trend_pool_settings.enabled` auf `false`, pushen, `./update.sh`.
 
 ---
 
-## Illustration eines Trades ansehen
+## Einstellungen
 
-```bash
-PYTHONPATH=src python3 -c "
-from oraclebot.analysis.renko_chart import generate_renko_chart
-from oraclebot.utils.data_fetch import fetch_all_timeframes
+`settings.json` → `trend_pool_settings`:
 
-symbol = 'NEAR/USDT:USDT'
-ohlcv = fetch_all_timeframes(symbol, ['5m'], 14, cache_dir='artifacts/datasets', use_cache=True)
-generate_renko_chart(ohlcv['5m'], symbol, base_pct=0.00278, k_entropy=0.7, h_window=15,
-                      horizontal_lookback=6, breakout_run=2, start_capital=100.0,
-                      out_path='artifacts/charts/illustration.html')
-"
+| Schlüssel | Wert | Bedeutung |
+|---|---|---|
+| `enabled` | `true` | Hauptschalter |
+| `coins` | 23 Coins | Pool-Coins |
+| `anchor` | `2023-01-01` | Startpunkt der Brick-Ketten (nicht ändern, sonst neue Ketten) |
+| `base_pct_1h_by_coin` | je Coin | Grundgröße der 1h-Bricks (ungerundet) |
+| `htf_abc` / `htf_d` | `2h,4h,8h,1D` / `1h,2h,4h,8h,1D` | Trend-Zeitrahmen je Einstiegsart |
+| `mults` | `1, 1.5, 2, 3` | Brick-Größen der Trend-Ebene |
+| `entries_abc`, `include_d` | `A,B,C`, `true` | Einstiegsarten |
+| `horizontal_lookback`, `breakout_run` | `6`, `2` | Muster für Einstieg B |
+| `lookback_weeks` | `4` | Rückblick der Wochenauswahl |
+| `top_k` | `5` | Anzahl gleichzeitig ausgewählter Strategien = Anzahl Slots |
+| `max_per_coin` | `1` | höchstens eine Strategie je Coin |
+| `leverage`, `margin_mode` | `3`, `isolated` | Hebel |
+| `safety_stop_pct` | `25` | Notbremse in % Gegenlauf |
+| `entry_grace_hours` | `2` | Einstieg wird bis zu 2 Stunden nachgeholt, falls ein Lauf ausfiel |
+| `cost_pct`, `funding_pct_8h` | `0.16`, `0.01` | Kostenannahmen des Backtests |
+
+
+---
+
+## Architektur
+
+```
+scripts/
+├── trend_pool_live.py        Stündlicher Live-Lauf (einziger Cronjob)
+├── trend_pool_weekly.py      Wochenauswahl (wird vom Live-Lauf automatisch aufgerufen, manuell nutzbar)
+└── trend_pool_backtest.py    Portfolio-Backtest mit den Live-Funktionen
+src/oraclebot/
+├── strategy/
+│   ├── trend_pool.py         Signalfunktion: Bricks beider Ebenen, Einstiege A/B/C/D, Trades
+│   ├── trend_pool_select.py  Wochenauswahl (Score, Top-K, max. 1 je Coin)
+│   └── trend_pool_decide.py  Ein-/Ausstiegsentscheidung je Stunde
+├── analysis/
+│   └── trend_pool_portfolio.py  Portfolio-Simulation mit Kapital, Hebel, Mindestorder, Sicherheits-Stop
+├── data/ear_bricks.py        EAR-Brick-Konstruktion (Entropie-adaptive Brick-Größe)
+└── utils/
+    ├── ohlcv_cache.py        Append-only 1h-Cache über Bitgets history-candles-Endpunkt
+    ├── exchange.py           Bitget-Wrapper (inkl. strikter Positionsabfrage, Gesamtkapital)
+    ├── telegram.py           Benachrichtigungen
+    └── config.py             settings.json laden
+artifacts/
+├── datasets/trend_1h_<COIN>.pkl       1h-Cache (nicht in Git)
+└── state/trend_pool_*.json            Wochenauswahl, Positionen (nicht in Git)
 ```
 
-Zeigt Bricks als Candlestick, die Seitwärtsphase vor jedem Entry grau schattiert, Entry/Exit-
-Marker und eine illustrative Kapitalkurve (ohne Hebel/Gebühren — reine Nachvollziehbarkeit der
-Signal-Logik, keine Performance-Zahl). `base_pct` je Coin siehe
-`settings.json::renko_breakout_settings.base_pct_brick_by_symbol`.
+---
+
+## Fallstricke, die schon einmal passiert sind
+
+- **Brick-Kanten sind keine handelbaren Preise.** Die frühere Renko-Strategie sah im Backtest stark aus, weil
+  sie zu Brick-Kanten füllte. Real steht ein Brick erst beim Kerzenschluss fest, dann ist der Kurs schon
+  weiter. Beim Einstieg kostete das im Median ½ Brick, beim Ausstieg 1½ Bricks, und damit war die ganze Edge
+  weg. Hier wird deshalb ausschließlich zum Kerzenschlusskurs gerechnet.
+- **Die gepinnte ccxt-Version liefert Lücken.** `ccxt==4.3.5` gab bei Bitget für Startzeitpunkte zwischen
+  09.07. und 30.07.2026 immer leere Antworten; der erste Cache verlor dadurch 600 Kerzen je Coin, und die
+  Wochenauswahl auf dem VPS wich ab. `ohlcv_cache.py` fragt deshalb Bitgets `history-candles` direkt mit
+  festen 200-Stunden-Fenstern ab. Dessen `endTime` lässt die letzte Kerze weg, daher endet jede Anfrage bei
+  der Öffnung der nächsten Kerze. Datenabrufe immer gegen die Version aus `requirements.txt` testen.
+- **Verschluckte API-Fehler lassen Positionen verwaisen.** `fetch_open_positions()` gibt bei Fehlern `[]`
+  zurück; eine echte Position sähe dann „geschlossen“ aus und bekäme keinen Ausstieg mehr (bei mbot führte
+  dasselbe Muster zu einer Liquidation). Der Trend-Pool nutzt `fetch_open_positions_strict()`, das bei Fehlern
+  abbricht.
+- **Zwei Bots auf einem Konto stören sich.** Die frühere Renko-Engine hätte beim Abgleich fremde Positionen auf
+  ihren Coins übernommen und nach eigenen Signalen geschlossen. Deshalb wurde sie vor dem Start des Trend-Pools
+  komplett gestoppt und entfernt. Der Trend-Pool selbst fasst Positionen, die nicht von ihm stammen, nie an.
+- **Rundung verändert Renko-Ketten.** Schon auf 6 Stellen gerundete Brick-Größen ergaben andere Trades.
+  Brick-Parameter immer ungerundet speichern.
+
+---
+
+## Historie
+
+| Zeitraum | Strategie | Ergebnis |
+|---|---|---|
+| bis 2026-09-22 | 4h-Barriere-Vorhersage (BTC, Gradient Boosting) | nach Lookahead-Fix keine Edge, Code entfernt |
+| 2026-09-21 bis 09-27 | Renko-Breakout auf 5m-Bricks, 7 Coins, Echtzeit per WebSocket | Backtest-Gewinn war Brick-Preis-Illusion; live 23 % Winrate, stillgelegt |
+| seit 2026-09-27 | **Trend-Pool** (dieses README) | live seit 2026-09-27 |
+
+Der Code der früheren Strategien wurde entfernt; er ist in der Git-Historie erhalten (letzter Stand der
+Renko-Echtzeit-Engine: Commit `ec9a826`).
 
 ---
 
 ## Troubleshooting
 
-Alle Tagesbefehle stehen gesammelt in der [Befehlsübersicht](#-befehlsübersicht-cheat-sheet) oben.
-
-#### `update.sh` fragt bei `git fetch`/`git reset --hard` nach Benutzername/Passwort
-
-Passiert, wenn die Remote-URL des lokalen Repos auf HTTPS steht
-(`https://github.com/Youra82/oraclebot.git`) statt auf SSH. Fix (im `oraclebot`-Verzeichnis auf
-dem betroffenen Rechner/VPS):
+**`update.sh` fragt nach Benutzername/Passwort:** Die Remote-URL steht auf HTTPS.
 
 ```bash
 git remote set-url origin git@github.com:Youra82/oraclebot.git
-git fetch origin   # sollte jetzt ohne Passwort funktionieren
+ssh -T git@github.com   # erwartet: "Hi Youra82! You've successfully authenticated..."
 ```
 
-Fragt danach immer noch nach Passwort/Passphrase, kurz prüfen, ob der SSH-Key überhaupt aktiv ist:
-
-```bash
-ssh -T git@github.com
-# Erwartete Ausgabe: "Hi Youra82! You've successfully authenticated..."
-```
-
-Kommt stattdessen ein Fehler, ist der SSH-Key auf diesem Rechner nicht im ssh-agent geladen oder
-nicht bei GitHub hinterlegt.
-
----
-
-## Wichtige Regeln & bekannte Einschränkungen
-
-- **Diese Strategie braucht Echtzeit-Ausführung, kein Cron-Polling verträgt sie.** Siehe
-  ["Warum Echtzeit-Ausführung"](#warum-echtzeit-ausführung-statt-cron-polling) oben — jede
-  Verzögerung ≥1 Minute zwischen Signal und Order-Ausführung dreht die Edge komplett ins Negative
-  (+420% OOS bei 0 Lag vs. -142% OOS bei jedem messbaren Lag). Das ist der Hauptgrund, warum
-  `run_renko_realtime.py` und nicht `run_renko_breakout.py` produktiv läuft.
-- **`pgrep -f <eigener-skriptname>` in einem Watchdog-Cronjob matcht sich selbst.** Die
-  aufrufende `sh -c`-Prozesskette enthält den gesuchten Pattern-Text zwangsläufig in ihrer eigenen
-  Kommandozeile — der Watchdog denkt dann bei jedem Tick fälschlich "läuft schon" und startet nie.
-  Lösung hier: PID-Datei statt Pattern-Matching (`scripts/watchdog_renko.sh`).
-- **Von Windows aus committete `.sh`-Dateien verlieren ihr Ausführungsrecht**, wenn Git unter
-  Windows läuft (keine native Unix-Permission-Bit-Verfolgung). Ein nachträgliches `chmod +x` nur
-  auf dem VPS überlebt den nächsten `update.sh`-`git reset --hard` nicht — der Fix muss über
-  `git update-index --chmod=+x <datei>` direkt im Repo-Index passieren.
-- **Hebel/Sicherheits-Stop müssen gegen die ECHTEN, symbolspezifischen Bitget-Wartungsmargen
-  kalibriert werden, nicht gegen eine pauschale Annahme.** Fund 2026-09-21: eine erste
-  Kalibrierung nutzte fälschlich BTCs Wartungsmarge (0.40%) für alle 7 Altcoins — die echten
-  Sätze liegen bei 0.66% (NEAR/DOT/ADA/AVAX/SUI) bzw. 0.50% (SOL), abgefragt über
-  `publicMixGetV2MixMarketQueryPositionLever`. Damit war die reale Liquidationsdistanz bei 40x
-  deutlich enger als angenommen. Vor jeder künftigen Hebel-Änderung: echte Sätze neu abfragen,
-  nicht die Werte aus dieser Tabelle als dauerhaft gültig annehmen (Bitget kann sie ändern).
-- **Backtests ohne Liquidationsprüfung sind für gehebelte Renko-Strategien irreführend.** Ein
-  Trade, der laut Brick-Logik als kleiner Verlust endet, kann auf dem Weg dahin einen größeren
-  Kursausschlag gehabt haben, der bei hohem Hebel längst zur Liquidation geführt hätte. Jeder
-  Realismus-Backtest hier prüft deshalb den maximalen adversen Ausschlag (MAE) anhand echter
-  5m-High/Low-Kerzen gegen die Liquidationsdistanz, nicht nur den Brick-definierten Exit-Preis.
-- **Ein gemeinsamer Slot für alle 7 Coins erzeugt bei echtem Gleichstand einen live nicht
-  reproduzierbaren Zufall (behoben 2026-09-25).** Siehe
-  [Warum Mehrfach-Positionen](#warum-mehrfach-positionen-statt-ein-slot-arbitrierung) — drei
-  Versuche, den Gleichstand über eine bessere Regel aufzulösen, scheiterten an der
-  Out-of-Sample-Prüfung. Strukturell gelöst durch komplett unabhängige Positionen je Symbol,
-  nicht durch eine "smartere" Arbitrierungs-Regel.
-- **Der periodische Reconcile gegen die echte Börse (alle 60s) ist kein optionales Extra.** Der
-  laufende Prozess gleicht seinen internen Positionszustand nicht nur beim Start, sondern
-  fortlaufend gegen Bitget ab — ohne das würde eine manuell (oder anderweitig extern) geschlossene
-  Position vom Prozess unbemerkt bleiben und er würde dauerhaft auf ein Exit-Signal für eine gar
-  nicht mehr existierende Position warten, statt neue Entries zu suchen.
-- `secret.json` ist **nicht in Git** — wird von `update.sh` gesichert/wiederhergestellt.
-- Backtest-PnL bei mehreren hundert Trades und Anti-Martingale-Compounding wird schnell
-  astronomisch groß (reines Artefakt exponentiellen Compoundings über viele Trades) — als
-  **relativer** Vergleich zwischen Konfigurationen aussagekräftig, als absolute Zahl nicht.
-- Bitgets `fetch_funding_rate_history` ignoriert den `since`-Parameter vollständig — die
-  Rohschnittstelle (`publicMixGetV2MixMarketHistoryFundRate` mit `pageNo`-Paginierung) liefert
-  serverseitig maximal ~270 Datensätze (~89 Tage) zurück, unabhängig von der angefragten Tiefe.
+**Log zeigt `Cache endet bei … nicht handeln`:** Bitget lieferte die letzten Stunden nicht. Der Lauf handelt
+dann bewusst nicht und versucht es in der nächsten Stunde erneut.
 
 ---
 
 ## Abhängigkeiten
 
 ```
-ccxt==4.3.5        # Exchange-Verbindung (Bitget)
-pandas==2.3.3      # Datenverarbeitung
-numpy==2.3.5       # Array-Operationen
-requests           # Telegram-API
-pytest             # Tests
-plotly>=6.0.0       # Interaktive HTML-Charts
-openpyxl>=3.1.0     # Excel-Export
-websockets>=13.0    # Echtzeit-Ausfuehrung (run_renko_realtime.py) -- roher WebSocket-Client,
-                    # da ccxt.pro nicht installiert/lizenziert ist
+ccxt==4.3.5        # Bitget (Kerzen über den rohen history-candles-Endpunkt, siehe Fallstricke)
+pandas==2.3.3
+numpy==2.3.5
+requests           # Telegram
+pytest
 ```

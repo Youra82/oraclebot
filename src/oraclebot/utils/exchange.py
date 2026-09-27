@@ -126,20 +126,12 @@ class Exchange:
         return float(total)
 
     def fetch_closed_positions(self, symbol: str, limit: int = 100) -> list:
-        """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) -- fuer den taeglichen
-        Live-Signal-Vergleich (analysis/renko_live_signal_check.py) UND fuer die Anti-Martingale-
-        Gewinn/Verlust-Erkennung bei extern geschlossenen Positionen (strategy/renko_live_trade.py).
+        """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) je Symbol.
 
-        WICHTIG (Fund 2026-09-25): ccxt's vereinheitlichtes fetchPositionsHistory() existiert erst
-        ab einer neueren ccxt-Version als die in requirements.txt gepinnte (ccxt==4.3.5) -- auf
-        dem VPS schlug das live mit AttributeError fehl und liess dadurch JEDEN betroffenen Trade
-        faelschlich als Verlust verbuchen (der Fallback in renko_live_trade.py faengt Exceptions
-        konservativ als False ab). Der Fehler blieb bis dahin unbemerkt, weil vorher kein
-        Produktionscode diese Funktion tatsaechlich aufrief. Deshalb jetzt der rohe Bitget-
-        Endpunkt direkt (privateMixGetV2MixPositionHistoryPosition, bereits in ccxt 4.3.5
-        registriert, live gegen den echten Account verifiziert), manuell auf dieselbe
-        vereinheitlichte Form normalisiert, die der Rest des Codes erwartet (realizedPnl/side/
-        entryPrice/timestamp) -- unabhaengig von der ccxt-Version."""
+        ccxt's vereinheitlichtes fetchPositionsHistory() existiert erst ab einer neueren ccxt-Version als die in
+        requirements.txt gepinnte (ccxt==4.3.5) -- deshalb der rohe Bitget-Endpunkt direkt
+        (privateMixGetV2MixPositionHistoryPosition), manuell auf die vereinheitlichte Form normalisiert
+        (realizedPnl/side/entryPrice/timestamp) -- unabhaengig von der ccxt-Version (Fund 2026-09-25)."""
         if not self.markets:
             return []
         try:

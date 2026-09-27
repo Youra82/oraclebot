@@ -1,7 +1,6 @@
 # scripts/trend_pool_live.py
 # Stuendlicher Live-Lauf des Trend-Pools (Cron: `1 * * * *`). Ablauf:
-#   1. Sperren pruefen: kein zweiter Lauf parallel, und NICHT handeln, solange die alte Renko-Echtzeit-Engine
-#      noch lebt (sie uebernimmt fremde Positionen auf ihren Coins, siehe run_renko_realtime.py).
+#   1. Sperre pruefen: kein zweiter Lauf parallel.
 #   2. Zustand gegen die Boerse abgleichen (strikt: API-Fehler -> Abbruch, nie "Position weg" annehmen).
 #   3. Fuer alle ausgewaehlten + gehaltenen Strategien die Trades mit der Backtest-Signalfunktion berechnen.
 #   4. decide_actions() (identisch zur Portfolio-Simulation) -> Positionen schliessen/eroeffnen.
@@ -29,7 +28,6 @@ STATE_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'state')
 SELECTION_PATH = os.path.join(STATE_DIR, 'trend_pool_selection.json')
 POSITIONS_PATH = os.path.join(STATE_DIR, 'trend_pool_positions.json')
 LOCK_PATH = os.path.join(STATE_DIR, 'trend_pool_live.lock')
-RENKO_PID_PATH = os.path.join(STATE_DIR, 'renko_realtime.pid')
 MIN_ORDER_USDT = 5.0
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('trend_pool_live')
@@ -40,15 +38,6 @@ def _pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
         return True
     except (OSError, ValueError):
-        return False
-
-
-def renko_engine_alive() -> bool:
-    if not os.path.exists(RENKO_PID_PATH):
-        return False
-    try:
-        return _pid_alive(int(open(RENKO_PID_PATH).read().strip()))
-    except ValueError:
         return False
 
 
@@ -98,11 +87,6 @@ def run(dry_run: bool = False, now: pd.Timestamp = None):
         logger.info(msg.replace('\n', ' | '))
         if not dry_run:
             send_message(tg.get('bot_token'), tg.get('chat_id'), msg)
-
-    if renko_engine_alive():
-        notify('ORACLEBOT Trend-Pool: alte Renko-Engine laeuft noch -- kein Handel, bis sie gestoppt ist '
-               '(scripts/retire_renko.sh ausfuehren).')
-        return
 
     now = now or pd.Timestamp.now(tz='UTC')
     bar_close = now.floor('h')

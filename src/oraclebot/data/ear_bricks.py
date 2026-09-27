@@ -1,9 +1,7 @@
 # src/oraclebot/data/ear_bricks.py
 # Entropy-Adaptive-Renko-Brick-Konstruktion -- portiert aus zerobot/src/zerobot/strategy/
-# ear_engine.py (dort seit Juni 2026 live, siehe [[research_zerobot_live_vs_backtest_2026_08]]
-# fuer die dortige Live-vs-Backtest-Absicherung). Reine Datenstruktur-Funktion, KEIN Signal --
-# das neue Ausbruch-aus-Seitwaertsphase-Signal (strategy/horizontal_breakout_signal.py) baut
-# darauf auf, verwendet aber eine andere Signallogik als zerobots eigener Entropy-Squeeze.
+# ear_engine.py. Reine Datenstruktur-Funktion, KEIN Signal -- die Trend-Pool-Signale
+# (strategy/trend_pool.py) bauen darauf auf.
 #
 # Renko-Grundprinzip: Bricks entstehen NICHT zeitbasiert (anders als OHLCV-Kerzen), sondern
 # preisbasiert -- ein neuer Brick bildet sich erst, wenn der Preis sich um mindestens `brick_size`
