@@ -3,19 +3,19 @@
 ![Status](https://img.shields.io/badge/status-live-brightgreen)
 ![Strategie](https://img.shields.io/badge/strategie-zwei--ebenen--renko-blueviolet)
 ![Pool](https://img.shields.io/badge/pool-23%20Coins%20%C2%B7%201564%20Strategien-orange)
-![Auswahl](https://img.shields.io/badge/auswahl-w%C3%B6chentlich%20Top%205-yellow)
-![Hebel](https://img.shields.io/badge/hebel-3x%20isolated-red)
+![Auswahl](https://img.shields.io/badge/auswahl-w%C3%B6chentlich%20Top%203-yellow)
+![Hebel](https://img.shields.io/badge/hebel-7x%20isolated-red)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
 oraclebot handelt Trends mit Renko-Bricks auf zwei Ebenen. Große Bricks geben die Trendrichtung vor, kleine
 1h-Bricks bestimmen den Einstieg. Aus einem Pool von 1.564 solcher Strategien (23 Coins × Zeitrahmen ×
-Brick-Größe × Einstiegsart) wählt der Bot jeden Montag die 5 aus, die in den letzten 4 Wochen am besten
+Brick-Größe × Einstiegsart) wählt der Bot jeden Montag die 3 aus, die in den letzten 4 Wochen am besten
 gelaufen sind, und handelt nur diese.
 
-> **Ehrlicher Forschungsstand (2026-09-27):** In den Tests vor dem Start hat keine Variante eine über fremde
-> Coins und Zeiträume stabile Edge gezeigt. Der Portfolio-Backtest mit 25 USDT (2023-06 bis 2026-09) endet
-> mit der aktuellen Einstellung bei 27,83 USDT, aber mit −74 % größtem Rückgang zwischendurch. Der Bot läuft
-> auf ausdrücklichen Wunsch trotzdem mit echtem Geld. Details unter [Forschungsstand](#forschungsstand).
+> **Ehrlicher Forschungsstand (2026-09-27):** Keine Variante hat eine über fremde Coins und Zeiträume stabile
+> Edge gezeigt. Die aktive Einstellung **7x Hebel, Top 3** ist bewusst aggressiv gewählt: Im 70/30-Test machte sie
+> aus 20 USDT im OOS (09.2025–09.2026) 70,19 USDT (+251 %), im IS (06.2023–09.2025) aber nur 2,00 USDT (−90 %).
+> Details unter [Forschungsstand](#forschungsstand).
 
 ---
 
@@ -205,21 +205,20 @@ Die wichtigste Regel dieses Bots: Backtest und Live dürfen nicht auseinanderlau
 ## Positionsgröße und Risiko
 
 ```
-Slot-Marge   = Gesamtkapital / top_k            26 USDT / 5  ≈ 5,2 USDT
-Positionsgröße = Slot-Marge × Hebel             5,2 × 3     ≈ 15,7 USDT
-Sicherheits-Stop = 25 % Gegenlauf               (Liquidation bei 3x erst bei ~33 %)
+Slot-Marge   = Gesamtkapital / top_k            26 USDT / 3  ≈ 8,7 USDT
+Positionsgröße = Slot-Marge × Hebel             8,7 × 7     ≈ 61 USDT
+Sicherheits-Stop = 10,7 % Gegenlauf             (Liquidation bei 7x isoliert bei ~13–14 %)
 ```
 
 | Regel | Wert |
 |---|---|
-| Hebel | 3x, isolated |
+| Hebel | 7x, isolated |
 | Positionen je Coin | höchstens 1 |
-| Sicherheits-Stop | 25 % gegen die Position, als Bitget-Trigger (nur Notbremse; regulärer Ausstieg ist der Trend-Dreher) |
+| Sicherheits-Stop | 10,7 % gegen die Position (= 75 % der Liquidationsdistanz), als Bitget-Trigger; regulärer Ausstieg ist der Trend-Dreher |
 | Mindestorder | Coins, deren Bitget-Mindestorder größer ist als ein Slot, werden bei der Auswahl übersprungen |
-| Zu wenig Kapital | Liegt ein Slot unter 5 USDT (bei Top 5 unter ~8,3 USDT Kapital), kann der Bot nicht mehr handeln |
+| Zu wenig Kapital | Liegt eine Position unter 5 USDT (bei Top 3 und 7x unter ~2,2 USDT Kapital), kann der Bot nicht mehr handeln |
 
-Die Grenze ist real: Im Backtest blieb die Einstellung Top 10 ab Ende 2024 stehen, weil das Kapital unter die
-Schwelle fiel. Deshalb läuft der Bot mit Top 5.
+Bei 7x kostet ein Sicherheits-Stop rund 75 % der Marge dieses Slots, also etwa ein Viertel des Kapitals.
 
 ---
 
@@ -227,17 +226,20 @@ Schwelle fiel. Deshalb läuft der Bot mit Top 5.
 
 Alle Zahlen aus den Tests vom 2026-09-27, mit echten Kerzenschlusskursen, Gebühren, Slippage und Funding.
 
-**Portfolio-Backtest mit 25 USDT, 2023-06 bis 2026-09**, mit denselben Funktionen wie Live
-(`scripts/trend_pool_backtest.py`):
+**70/30-Test mit 20 USDT Start** (IS 05.06.2023–29.09.2025, OOS 29.09.2025–27.09.2026), mit denselben Funktionen
+wie Live (`scripts/trend_pool_backtest.py`):
 
-| Rückblick | Top | Hebel | Endkapital | größter Rückgang | Bemerkung |
-|---|---|---|---|---|---|
-| **4 Wochen** | **5** | **3x** | **27,83 USDT** | **−74 %** | **aktive Einstellung** |
-| 4 Wochen | 10 | 3x | 15,78 USDT | −49 % | handelt ab Ende 2024 nicht mehr |
-| 4 Wochen | 10 | 5x | 7,64 USDT | −78 % | |
-| 4 Wochen | 3 | 3x | 3,83 USDT | −92 % | |
-| 2 Wochen | 10 | 3x | 15,71 USDT | −41 % | stoppt früh |
-| 26 Wochen | 10 | 3x | 14,13 USDT | −43 % | stoppt früh |
+| Hebel · Slots | IS (70 %) | OOS (30 %) | Juni–Sep 2026 | Rückgang Juni–Sep |
+|---|---|---|---|---|
+| 3x · Top 5 (auf IS am besten) | 20 → 17,20 | 20 → 44,75 | 20 → 28,60 | −20 % |
+| 3x · Top 3 | 20 → 4,76 | 20 → 45,95 | 20 → 54,39 | −38 % |
+| 5x · Top 3 | 20 → 2,75 | 20 → 40,14 | 20 → 68,14 | −56 % |
+| **7x · Top 3 (aktiv)** | **20 → 2,00** | **20 → 70,19** | **20 → 84,12** | **−66 %** |
+
+Der Rückblick von 4 Wochen wurde im IS gewählt (2/8/12/26 Wochen verlieren im IS und OOS deutlich). Hebel und
+Anzahl der Slots wurden auf ausdrücklichen Wunsch nach dem Ertrag im Zeitraum Juni–September gewählt, nicht nach
+dem IS. Mehr Hebel verstärkt Gewinne und Verluste gleichermaßen; in Phasen wie 2025 hätte dieselbe Einstellung
+das Konto fast aufgebraucht.
 
 **Was die Einzeltests gezeigt haben:**
 
@@ -265,7 +267,7 @@ Alle Befehle im `oraclebot`-Verzeichnis, auf dem VPS mit `.venv/bin/python3`.
 | `.venv/bin/python3 scripts/trend_pool_live.py --dry-run` | Anzeigen, was der Bot jetzt tun würde, **keine Orders** |
 | `.venv/bin/python3 scripts/trend_pool_weekly.py` | Wochenauswahl manuell erstellen + per Telegram schicken |
 | `.venv/bin/python3 scripts/trend_pool_weekly.py --dry-run` | Wochenauswahl nur anzeigen |
-| `.venv/bin/python3 scripts/trend_pool_backtest.py --no-fetch --top-k 5` | Portfolio-Backtest (Optionen: `--start`, `--equity`, `--lookback`, `--leverage`) |
+| `.venv/bin/python3 scripts/trend_pool_backtest.py --no-fetch` | Portfolio-Backtest (Optionen: `--start`, `--equity`, `--lookback`, `--leverage`) |
 | `./run_tests.sh` | Testsuite |
 | `tail -f logs/trend_pool_live.log` | Live-Log mitverfolgen |
 | `cat artifacts/state/trend_pool_selection.json` | Aktuelle Wochenauswahl |
@@ -339,10 +341,10 @@ Ein einziger Cronjob, im Stil der anderen Bots mit `flock`:
 | `entries_abc`, `include_d` | `A,B,C`, `true` | Einstiegsarten |
 | `horizontal_lookback`, `breakout_run` | `6`, `2` | Muster für Einstieg B |
 | `lookback_weeks` | `4` | Rückblick der Wochenauswahl |
-| `top_k` | `5` | Anzahl gleichzeitig ausgewählter Strategien = Anzahl Slots |
+| `top_k` | `3` | Anzahl gleichzeitig ausgewählter Strategien = Anzahl Slots |
 | `max_per_coin` | `1` | höchstens eine Strategie je Coin |
-| `leverage`, `margin_mode` | `3`, `isolated` | Hebel |
-| `safety_stop_pct` | `25` | Notbremse in % Gegenlauf |
+| `leverage`, `margin_mode` | `7`, `isolated` | Hebel |
+| `safety_stop_pct` | `10.7` | Notbremse in % Gegenlauf (75 % der Liquidationsdistanz) |
 | `entry_grace_hours` | `2` | Einstieg wird bis zu 2 Stunden nachgeholt, falls ein Lauf ausfiel |
 | `cost_pct`, `funding_pct_8h` | `0.16`, `0.01` | Kostenannahmen des Backtests |
 

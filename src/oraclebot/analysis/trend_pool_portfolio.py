@@ -64,13 +64,14 @@ def run_portfolio(trades_by_id: dict, h1_by_coin: dict, start: pd.Timestamp, end
     ws = start - pd.Timedelta(days=start.weekday())
     ws = ws.normalize()
 
-    def pos_close(coin, ts, pnl_pct, reason):
+    def pos_close(coin, ts, pnl_pct, reason, exit_px):
         nonlocal equity
         p = positions.pop(coin)
         pnl = p['notional'] * pnl_pct / 100
         equity += pnl
         log.append({'coin': coin, 'id': p['id'], 'dir': p['dir'], 'entry_ts': p['entry_ts'], 'exit_ts': ts,
-                    'pnl_pct': pnl_pct, 'pnl_usdt': pnl, 'notional': p['notional'], 'reason': reason})
+                    'entry_px': p['entry_px'], 'exit_px': exit_px, 'pnl_pct': pnl_pct, 'pnl_usdt': pnl,
+                    'notional': p['notional'], 'reason': reason, 'equity_after': equity})
         eq_curve.append((ts, equity))
 
     while ws < end:
@@ -99,12 +100,12 @@ def run_portfolio(trades_by_id: dict, h1_by_coin: dict, start: pd.Timestamp, end
                 p = positions[coin]
                 hrs = (T - p['entry_ts']).total_seconds() / 3600
                 pnl_pct = p['dir'] * (p['stop_px'] - p['entry_px']) / p['entry_px'] * 100 - cost - fund * hrs / 8
-                pos_close(coin, T, pnl_pct, 'safety_stop')
+                pos_close(coin, T, pnl_pct, 'safety_stop', p['stop_px'])
             view = {c: {'id': p['id'], 'dir': p['dir'], 'entry_ts': p['entry_ts']} for c, p in positions.items()}
             for a in decide_actions(T, ws, trades_by_id, sel_ids, view, entered, 0.0, entries_by_id):
                 if a['action'] == 'close':
                     p = positions[a['coin']]
-                    pos_close(a['coin'], T, p['trade']['pnl_pct'], a['reason'])
+                    pos_close(a['coin'], T, p['trade']['pnl_pct'], a['reason'], p['trade']['exit_px'])
                 else:
                     used = sum(p['margin'] for p in positions.values())
                     margin = min(equity / top_k, equity - used)
