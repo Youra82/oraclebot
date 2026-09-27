@@ -146,11 +146,13 @@ def test_portfolio_runs_and_uses_same_selection():
 
 
 class _FakeEx:
+    """bildet Bitgets history-candles nach: Kerzen mit Oeffnungszeit in [startTime, endTime), max. limit"""
     def __init__(self, bars):
         self.bars = bars
 
-    def fetch_ohlcv(self, symbol, tf, since, limit):
-        return [b for b in self.bars if b[0] >= since][:limit]
+    def publicMixGetV2MixMarketHistoryCandles(self, p):
+        s, e, lim = int(p['startTime']), int(p['endTime']), int(p['limit'])
+        return {'data': [[str(b[0])] + [str(x) for x in b[1:]] + ['0'] for b in self.bars if s <= b[0] < e][-lim:]}
 
 
 def test_ohlcv_cache_excludes_running_bar_and_is_append_only(tmp_path):
@@ -169,3 +171,34 @@ def test_ohlcv_cache_raises_when_stale(tmp_path):
     bars = [[int((t0 + pd.Timedelta(hours=i)).timestamp() * 1000), 1, 2, 0.5, 1.5, 10] for i in range(5)]
     with pytest.raises(ohlcv_cache.OhlcvFetchError):
         ohlcv_cache.update_cache('X', '2026-01-01', str(tmp_path), now=t0 + pd.Timedelta(hours=20), exchange=_FakeEx(bars))
+
+
+class _FlakyEx(_FakeEx):
+    """liefert fuer den ersten Abruf ab `flaky_since` einmal eine leere Antwort (wie Bitget unter Last)"""
+    def __init__(self, bars, flaky_since):
+        super().__init__(bars)
+        self.flaky_since, self.hit = flaky_since, False
+
+    def publicMixGetV2MixMarketHistoryCandles(self, p):
+        if int(p['startTime']) == self.flaky_since and not self.hit:
+            self.hit = True
+            return {'data': []}
+        return super().publicMixGetV2MixMarketHistoryCandles(p)
+
+
+def test_ohlcv_cache_transient_empty_response_loses_no_bars(tmp_path):
+    t0 = pd.Timestamp('2026-01-01', tz='UTC')
+    bars = [[int((t0 + pd.Timedelta(hours=i)).timestamp() * 1000), 1, 2, 0.5, 1.5, 10] for i in range(700)]
+    flaky = bars[200][0]                                     # zweiter 200er-Block kommt zuerst leer zurueck
+    df = ohlcv_cache.update_cache('X', '2026-01-01', str(tmp_path), now=t0 + pd.Timedelta(hours=700, minutes=5),
+                                  exchange=_FlakyEx(bars, flaky), sleep_on_empty=0)
+    assert len(df) == 700 and df.index.to_series().diff().max() == pd.Timedelta(hours=1)
+
+
+def test_ohlcv_cache_real_gap_is_skipped_exactly(tmp_path):
+    t0 = pd.Timestamp('2026-01-01', tz='UTC')
+    hours = [i for i in range(900) if not (300 <= i < 650)]  # echte Luecke von 350 Stunden
+    bars = [[int((t0 + pd.Timedelta(hours=i)).timestamp() * 1000), 1, 2, 0.5, 1.5, 10] for i in hours]
+    df = ohlcv_cache.update_cache('X', '2026-01-01', str(tmp_path), now=t0 + pd.Timedelta(hours=900, minutes=5),
+                                  exchange=_FakeEx(bars), sleep_on_empty=0)
+    assert len(df) == len(hours) and df.index[300] == t0 + pd.Timedelta(hours=650)

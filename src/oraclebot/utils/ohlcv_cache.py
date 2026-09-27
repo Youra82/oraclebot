@@ -30,8 +30,40 @@ def cache_path(cache_dir: str, coin: str, tf: str = '1h') -> str:
     return os.path.join(cache_dir, f"trend_{tf}_{coin}.pkl")
 
 
+def _fetch_window(ex, market_id: str, start_ms: int, end_ms: int, tf_ms: int, max_failures: int,
+                  empty_retries: int, sleep_on_empty: float) -> list:
+    """Alle Kerzen mit Oeffnungszeit in [start_ms, end_ms] (hoechstens 200) ueber Bitgets rohen Endpunkt
+    `history-candles` mit festem Start UND Ende.
+
+    Fund 2026-09-27: ccxt.fetch_ohlcv() der auf dem VPS gepinnten ccxt==4.3.5 liefert fuer Startzeitpunkte
+    zwischen 2026-07-09 und 2026-07-30 bei Bitget DETERMINISTISCH leere Antworten (Endpunkt-Umschaltung
+    innerhalb von ccxt); ein blinder Sprung verlor dadurch 600 Kerzen je Coin, Wiederholen half nicht. Der rohe
+    Endpunkt liefert das Fenster vollstaendig (gegen ccxt 4.3.5 in isolierter venv verifiziert). Weil jedes
+    Fenster exakt festgelegt ist, bedeutet eine (nach Wiederholungen) leere Antwort wirklich: keine Daten."""
+    fails = 0
+    for attempt in range(empty_retries + 1):
+        try:
+            r = ex.publicMixGetV2MixMarketHistoryCandles({
+                'symbol': market_id, 'productType': 'USDT-FUTURES', 'granularity': '1H',
+                'startTime': str(start_ms), 'endTime': str(end_ms + tf_ms), 'limit': '200'})
+        except Exception as e:
+            fails += 1
+            if fails > max_failures:
+                raise OhlcvFetchError(f"{market_id}: Abruf {pd.Timestamp(start_ms, unit='ms', tz='UTC')} "
+                                      f"nach {max_failures} Versuchen gescheitert: {e}")
+            time.sleep(min(30, 2 * fails))
+            continue
+        rows = [[int(c[0]), float(c[1]), float(c[2]), float(c[3]), float(c[4]), float(c[5])]
+                for c in (r.get('data') or []) if start_ms <= int(c[0]) <= end_ms]
+        if rows:
+            return sorted(rows)
+        if attempt < empty_retries:
+            time.sleep(sleep_on_empty * (attempt + 1))
+    return []
+
+
 def update_cache(coin: str, anchor: str, cache_dir: str, tf: str = '1h', now: pd.Timestamp = None,
-                 exchange=None, max_failures: int = 20) -> pd.DataFrame:
+                 exchange=None, max_failures: int = 20, empty_retries: int = 3, sleep_on_empty: float = 2.0) -> pd.DataFrame:
     """Aktualisiert den Cache fuer `coin` bis zur letzten abgeschlossenen Kerze und gibt ihn zurueck."""
     os.makedirs(cache_dir, exist_ok=True)
     path = cache_path(cache_dir, coin, tf)
@@ -39,31 +71,21 @@ def update_cache(coin: str, anchor: str, cache_dir: str, tf: str = '1h', now: pd
     now = now or pd.Timestamp.now(tz='UTC')
     last_closed_open = now.floor('h') - pd.Timedelta(milliseconds=tf_ms)   # Oeffnungszeit der letzten fertigen Kerze
     df = pd.read_pickle(path) if os.path.exists(path) else pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
-    since = int(pd.Timestamp(anchor, tz='UTC').timestamp() * 1000) if df.empty else int(df.index[-1].timestamp() * 1000) + 1
+    since = int(pd.Timestamp(anchor, tz='UTC').timestamp() * 1000) if df.empty else int(df.index[-1].timestamp() * 1000) + tf_ms
     end_ms = int(last_closed_open.timestamp() * 1000)
     if since > end_ms:
         return df
     ex = exchange or _exchange()
-    symbol = f"{coin}/USDT:USDT"
-    rows, fails, empty_hops = [], 0, 0
+    market_id = f"{coin}USDT"
+    rows, empty_windows = [], 0
     while since <= end_ms:
-        try:
-            chunk = ex.fetch_ohlcv(symbol, tf, since, 200)
-            fails = 0
-        except Exception as e:  # jeder Fehler wird wiederholt, nie still abgebrochen
-            fails += 1
-            if fails > max_failures:
-                raise OhlcvFetchError(f"{symbol} {tf}: Abruf ab {pd.Timestamp(since, unit='ms', tz='UTC')} "
-                                      f"nach {max_failures} Versuchen gescheitert: {e}")
-            time.sleep(min(30, 2 * fails))
-            continue
+        w_end = min(since + 199 * tf_ms, end_ms)
+        chunk = _fetch_window(ex, market_id, since, w_end, tf_ms, max_failures, empty_retries, sleep_on_empty)
         if not chunk:
-            # echte Bitget-Datenluecke oder noch nicht gelistet: vorwaerts springen (wie robust_fetch)
-            empty_hops += 1
-            since += 200 * tf_ms
-            continue
-        rows.extend(c for c in chunk if c[0] <= end_ms)
-        since = chunk[-1][0] + 1
+            empty_windows += 1
+        rows.extend(chunk)
+        since = w_end + tf_ms
+        time.sleep(0.05)
     if rows:
         new = pd.DataFrame(rows, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
         new.index = pd.to_datetime(new.pop('ts'), unit='ms', utc=True)
@@ -75,8 +97,9 @@ def update_cache(coin: str, anchor: str, cache_dir: str, tf: str = '1h', now: pd
         tmp = path + '.tmp'
         df.to_pickle(tmp)
         os.replace(tmp, path)
-        logger.info(f"{coin} {tf}: +{len(new)} Kerzen, Cache bis {df.index[-1]} ({len(df)} gesamt, leere Spruenge {empty_hops})")
+        gaps = int((df.index.to_series().diff() > pd.Timedelta(milliseconds=tf_ms) * 1.5).sum())
+        logger.info(f"{coin} {tf}: +{len(new)} Kerzen, Cache bis {df.index[-1]} ({len(df)} gesamt, leere Fenster {empty_windows}, Luecken im Cache {gaps})")
     if df.empty or df.index[-1] < last_closed_open - pd.Timedelta(hours=3):
-        raise OhlcvFetchError(f"{symbol} {tf}: Cache endet bei {df.index[-1] if not df.empty else '-'}, "
+        raise OhlcvFetchError(f"{market_id} {tf}: Cache endet bei {df.index[-1] if not df.empty else '-'}, "
                               f"erwartet bis {last_closed_open} -- nicht handeln.")
     return df
