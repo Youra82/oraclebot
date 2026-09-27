@@ -97,6 +97,34 @@ class Exchange:
             logger.error(f"Fehler beim Abrufen offener Positionen fuer {symbol}: {e}", exc_info=True)
             return []
 
+    def fetch_open_positions_strict(self, symbol: str) -> list:
+        """Wie fetch_open_positions(), wirft aber bei API-Fehlern statt [] zurueckzugeben. Fuer den Trend-Pool:
+        ein verschluckter Fehler wuerde eine echte Position als 'geschlossen' erscheinen lassen und sie damit
+        unverwaltet (ohne Signal-Exit) liegen lassen -- gleiches Anti-Muster wie der mbot-Liquidations-Fund
+        vom 2026-09-21."""
+        params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+        positions = self.exchange.fetch_positions([symbol], params=params)
+        out = []
+        for p in positions:
+            contracts = p.get('contracts') or p.get('contractSize')
+            if contracts is not None and abs(float(contracts)) > 1e-9:
+                out.append(p)
+        return out
+
+    def fetch_balance_total_usdt(self) -> float:
+        """Gesamtkapital (inkl. in Positionen gebundener Marge) -- Basis fuer die Slot-Groesse im Trend-Pool.
+        Wirft bei Fehlern (kein stilles 0.0)."""
+        params = {'marginCoin': 'USDT', 'productType': 'USDT-FUTURES'}
+        balance = self.exchange.fetch_balance(params=params)
+        total = (balance.get('total') or {}).get('USDT')
+        if total is None and isinstance(balance.get('info'), list):
+            for item in balance['info']:
+                if item.get('marginCoin') == 'USDT':
+                    total = item.get('accountEquity') or item.get('usdtEquity')
+        if total is None:
+            raise RuntimeError(f"Gesamtkapital nicht ermittelbar: {balance}")
+        return float(total)
+
     def fetch_closed_positions(self, symbol: str, limit: int = 100) -> list:
         """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) -- fuer den taeglichen
         Live-Signal-Vergleich (analysis/renko_live_signal_check.py) UND fuer die Anti-Martingale-

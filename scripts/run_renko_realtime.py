@@ -328,6 +328,21 @@ async def run(dry_run: bool = False):
                                      f"(Stale-Bar-Flush) -- laeuft trotzdem weiter, siehe Traceback:",
                                      exc_info=True)
 
+            # Stilllegung (2026-09-27, Trend-Pool ersetzt diese Strategie): enabled=false wird VOR dem
+            # Reconcile geprueft und beendet den Prozess SOFORT -- auch mit offenen Positionen. Frueher lief
+            # hier ein "Soft-Pause"-Modus weiter, dessen Reconcile fremde Positionen auf denselben Coins
+            # uebernommen (siehe reconcile_positions_state) und nach Renko-Signalen geschlossen haette. Offene
+            # Alt-Positionen schliesst scripts/retire_renko.sh.
+            try:
+                if not load_settings().get('renko_breakout_settings', {}).get('enabled', False):
+                    logger.info("Renko-Realtime: enabled=false erkannt -- beende sofort (stillgelegt).")
+                    save_state_atomic(BRICK_STATE_PATH, brick_state)
+                    stream.stop()
+                    heartbeat_task.cancel()
+                    return
+            except Exception as e:
+                logger.error(f"Renko-Realtime: Settings-Neucheck fehlgeschlagen: {e}")
+
             # Periodischer Abgleich gegen die echten Boersen-Positionen -- NICHT nur einmal beim
             # Start (Fund 2026-09-23: eine manuelle Positions-Schliessung durch den User waehrend
             # eines laufenden Prozesses blieb sonst bis zum naechsten Exit-Signal unbemerkt).

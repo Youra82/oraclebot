@@ -1,10 +1,57 @@
-# oraclebot — Portfolio-Renko-Breakout-Strategie
+# oraclebot — Trend-Pool (Zwei-Ebenen-Renko, wöchentliche Auswahl)
 
 ![Status](https://img.shields.io/badge/status-live-brightgreen)
-![Ausführung](https://img.shields.io/badge/ausführung-echtzeit--websocket-blueviolet)
-![Coins](https://img.shields.io/badge/coins-7%20Altcoins-orange)
-![Hebel](https://img.shields.io/badge/hebel-20x%20isolated-red)
+![Strategie](https://img.shields.io/badge/strategie-trend--pool-blueviolet)
+![Coins](https://img.shields.io/badge/pool-23%20Coins%20%C2%B7%201564%20Strategien-orange)
+![Hebel](https://img.shields.io/badge/hebel-3x%20isolated-red)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+
+## Stand 2026-09-27: Trend-Pool ersetzt die Renko-Echtzeit-Strategie
+
+Die bisherige 5m-Renko-Breakout-Strategie (alles ab „Grundidee“ weiter unten) ist **stillgelegt**
+(`renko_breakout_settings.enabled=false`). Ihr Backtest-Gewinn kam aus Fills zu Brick-Kanten, die real nie
+erreichbar waren; mit echten Preisen verliert sie (live 23 % Winrate).
+
+**Trend-Pool:** 1.564 Strategien = 23 Coins × Trend-Bricks (1h/2h/4h/8h/1 Tag) × Brick-Größe (x1/x1,5/x2/x3)
+× Einstieg (A/B/C: auf 1h-Bricks in Trendrichtung, D: beim Dreher des Trend-Bricks). Ausstieg, sobald der
+Trend-Brick die Richtung wechselt. Jeden Montag werden die besten `top_k` (aktuell 5) Strategien der letzten
+`lookback_weeks` Wochen gewählt (max. 1 je Coin, nur Coins, deren Bitget-Mindestorder in einen Slot passt).
+
+- **Live = Backtest:** `strategy/trend_pool.py` ist die einzige Signalfunktion für Backtest, Portfolio-Simulation
+  und Live. Live baut die Brick-Kette jede Stunde komplett ab `anchor` (2023-01-01) aus einem append-only
+  1h-Cache neu auf; `tests/test_trend_pool.py` prüft, dass das auf abgeschnittener Historie exakt die
+  Backtest-Trades ergibt. Alle Fills am 1h-Kerzenschluss, nie an Brick-Kanten.
+- **Ehrlicher Forschungsstand:** keine Variante hat in den Tests vom 2026-09-27 eine über fremde Coins und
+  Zeiträume stabile Edge gezeigt. Portfolio-Backtest mit 25 USDT (2023-06 bis 2026-09): Standard
+  4W/Top 10/3x → 15,78 USDT, handelt ab Ende 2024 nicht mehr (Slot unter Bitget-Minimum); 4W/Top 5/3x →
+  27,83 USDT bei −74 % Max-Drawdown. Auf ausdrücklichen Wunsch trotzdem mit echtem Geld live.
+
+| Befehl | Zweck |
+|---|---|
+| `.venv/bin/python3 scripts/trend_pool_weekly.py` | Wochenauswahl manuell (der stündliche Lauf erstellt sie zu Beginn jeder UTC-Woche automatisch) |
+| `.venv/bin/python3 scripts/trend_pool_live.py` | Stündlicher Lauf (Cron `:01`): Abgleich, Signale, Orders |
+| `... trend_pool_weekly.py --dry-run` / `trend_pool_live.py --dry-run` | Nur anzeigen, nichts senden/handeln |
+| `.venv/bin/python3 scripts/trend_pool_backtest.py --no-fetch --top-k 5` | Portfolio-Backtest mit den Live-Funktionen |
+| `bash scripts/retire_renko.sh` | Einmalig: alte Renko-Engine stoppen, Watchdog-Cron entfernen, Alt-Positionen schließen |
+
+**Deployment (einmalig nach `update.sh`):**
+
+```bash
+bash scripts/retire_renko.sh                                   # alte Engine stilllegen
+.venv/bin/python3 scripts/trend_pool_weekly.py                 # erster Download (~10 Min) + erste Auswahl
+.venv/bin/python3 scripts/trend_pool_live.py --dry-run         # Kontrolle
+crontab -e
+# 1 * * * * cd /home/<user>/oraclebot && .venv/bin/python3 scripts/trend_pool_live.py >> logs/trend_pool_live.log 2>&1
+```
+
+Sicherheiten: Sicherheits-Stop je Position als Bitget-Trigger (`safety_stop_pct`, Standard 25 % bei 3x),
+Positionsabfragen strikt (API-Fehler → Abbruch statt „Position weg“), kein Handel solange die alte
+Renko-Engine lebt, fremde Positionen auf Pool-Coins werden nicht angefasst, Datencache wirft bei Lücken
+statt still verkürzt weiterzurechnen.
+
+---
+
+*Ab hier: Dokumentation der stillgelegten Renko-Echtzeit-Strategie (historisch).*
 
 ## Grundidee
 

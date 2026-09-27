@@ -26,3 +26,7 @@ artifacts/datasets/last_renko_signal_check_run.txt
 # Live-Zustand der Anti-Martingale-Positionsgroesse (siehe anti_martingale.py) -- rein
 # runtime-generiert, pro Account unterschiedlich, nicht fuer Git geeignet.
 artifacts/state/
+
+# Trend-Pool 1h-Cache (append-only, wird auf jedem Rechner selbst ab anchor geladen)
+artifacts/datasets/trend_1h_*.pkl
+artifacts/results/trend_pool_backtest_*.csv
