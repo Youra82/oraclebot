@@ -202,3 +202,27 @@ def test_ohlcv_cache_real_gap_is_skipped_exactly(tmp_path):
     df = ohlcv_cache.update_cache('X', '2026-01-01', str(tmp_path), now=t0 + pd.Timedelta(hours=900, minutes=5),
                                   exchange=_FakeEx(bars), sleep_on_empty=0)
     assert len(df) == len(hours) and df.index[300] == t0 + pd.Timedelta(hours=650)
+
+
+def test_live_reversal_open_not_dropped_as_foreign():
+    """Dreher (Einstieg D): eigene Position wird im selben Lauf geschlossen und die Gegenposition eroeffnet --
+    die eigene, noch offene Position darf den Einstieg NICHT als 'fremd' blockieren (Live-Fund 2026-10-09)."""
+    import os, sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    from trend_pool_live import drop_foreign_opens
+    acts = [{'action': 'close', 'coin': 'FIL', 'id': 'FIL|1h|1|D', 'reason': 'htf_flip'},
+            {'action': 'open', 'coin': 'FIL', 'id': 'FIL|1h|1|D', 'dir': 1},
+            {'action': 'open', 'coin': 'ADA', 'id': 'ADA|4h|1|C', 'dir': 1}]
+    on_exchange = {'FIL', 'ADA'}                       # FIL = eigene (gleich geschlossen), ADA = fremd
+    out = drop_foreign_opens(acts, {'FIL'}, lambda c: c in on_exchange)
+    assert [(a['action'], a['coin']) for a in out] == [('close', 'FIL'), ('open', 'FIL')]
+
+
+def test_slot_margin_uses_realized_equity_and_buffer():
+    """Live-Fund 2026-10-09: 26,6 USDT Kapital davon 12 USDT unrealisiert, frei nur 4,25 -> Order abgelehnt."""
+    import os, sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+    from trend_pool_live import slot_margin
+    assert slot_margin(14.62, 4.25, 3) == pytest.approx(4.25 * 0.90)     # frei begrenzt, mit Puffer
+    assert slot_margin(30.0, 50.0, 3) == pytest.approx(10.0)             # realisiertes Kapital / top_k
+    assert slot_margin(30.0, -1.0, 3) == 0.0

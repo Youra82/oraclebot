@@ -54,6 +54,32 @@ def acquire_lock() -> bool:
     return True
 
 
+def drop_foreign_opens(actions: list, own_coins: set, has_exchange_position) -> list:
+    """Entfernt Einstiege auf Coins, auf denen eine FREMDE Position liegt (nicht vom Trend-Pool).
+
+    Fund 2026-10-09: Die Pruefung lief frueher auch fuer Coins, deren eigene Position im SELBEN Lauf erst noch
+    geschlossen wird (Dreher bei Einstieg D: Ausstieg + Gegenposition in derselben Kerze). Die eigene, noch offene
+    Position galt dann als fremd, der Einstieg fiel weg und wurde eine Stunde spaeter ueber die Nachholfrist zu
+    einem anderen Kurs nachgeholt (12/12 FIL-Dreher live betroffen). Eigene Coins werden deshalb nicht geprueft;
+    ihre Position schliesst dieser Lauf vor dem Einstieg selbst."""
+    out = []
+    for a in actions:
+        if a['action'] == 'open' and a['coin'] not in own_coins and has_exchange_position(a['coin']):
+            logger.warning(f"{a['coin']}: offene Position ohne Trend-Pool-Zustand -- Einstieg uebersprungen.")
+            continue
+        out.append(a)
+    return out
+
+
+MARGIN_BUFFER = 0.90   # Bitget reserviert bei Market-Orders Gebuehren + Preispuffer; 98 % reichte nicht (40762)
+
+
+def slot_margin(realized_equity: float, available: float, top_k: int) -> float:
+    """Marge fuer einen neuen Slot: Anteil des REALISIERTEN Kapitals (wie die Portfolio-Simulation, die nur mit
+    abgeschlossenen Trades rechnet), hoechstens 90 % des frei verfuegbaren Guthabens."""
+    return max(0.0, min(realized_equity / top_k, available * MARGIN_BUFFER))
+
+
 def load_state() -> dict:
     if not os.path.exists(POSITIONS_PATH):
         return {'positions': {}, 'entered': []}
@@ -114,7 +140,7 @@ def run(dry_run: bool = False, now: pd.Timestamp = None):
             sel = json.load(f)
     if sel is None or pd.Timestamp(sel['week_start']) != ws:
         from trend_pool_weekly import run_selection, format_selection, save_selection
-        sel = run_selection(cfg, ex.exchange, ex.fetch_balance_total_usdt(), now=now)
+        sel = run_selection(cfg, ex.exchange, ex.fetch_margin_balances()['realized_equity'], now=now)
         if not dry_run:
             save_selection(sel)
         notify(format_selection(sel))
@@ -129,10 +155,8 @@ def run(dry_run: bool = False, now: pd.Timestamp = None):
     # fremde Positionen auf Pool-Coins (z.B. manuell) blockieren den Coin, werden aber nicht angefasst
     view = {c: {'id': p['id'], 'dir': p['dir'], 'entry_ts': p['entry_ts']} for c, p in state['positions'].items()}
     actions = decide_actions(bar_close, ws, trades, selected, view, entered, cfg.get('entry_grace_hours', 2))
-    for a in [x for x in actions if x['action'] == 'open']:
-        if ex.fetch_open_positions_strict(f"{a['coin']}/USDT:USDT"):
-            logger.warning(f"{a['coin']}: offene Position ohne Trend-Pool-Zustand -- Einstieg uebersprungen.")
-            actions.remove(a)
+    actions = drop_foreign_opens(actions, set(state['positions']),
+                                 lambda coin: bool(ex.fetch_open_positions_strict(f"{coin}/USDT:USDT")))
     logger.info(f"Bar {bar_close}, Woche {ws.date()}, Auswahl {len(selected)}, Positionen {list(state['positions'])}, Aktionen {actions}")
 
     # --- 4. Ausfuehren ---
@@ -149,18 +173,16 @@ def run(dry_run: bool = False, now: pd.Timestamp = None):
                f"Einstieg {p['entry_px']:.6g}")
     opens = [x for x in actions if x['action'] == 'open']
     if opens:
-        equity = ex.fetch_balance_total_usdt()
         for a in opens:
             coin, symbol = a['coin'], f"{a['coin']}/USDT:USDT"
-            entered.add((a['id'], a['entry_ts']))
-            state['entered'].append([a['id'], a['entry_ts'].isoformat()])
-            free = ex.fetch_balance_usdt()
-            margin = min(equity / cfg['top_k'], free * 0.98)
+            bal = ex.fetch_margin_balances()
+            margin = slot_margin(bal['realized_equity'], bal['available'], cfg['top_k'])
             price = float(ex.exchange.fetch_ticker(symbol)['last'])
             notional = margin * cfg['leverage']
             amount = notional / price
             min_amt = ex.fetch_min_amount_tradable(symbol)
             if notional < MIN_ORDER_USDT or amount < min_amt:
+                entered.add((a['id'], a['entry_ts'])); state['entered'].append([a['id'], a['entry_ts'].isoformat()])
                 notify(f"ORACLEBOT Trend-Pool: {coin} ({a['id']}) ausgelassen -- Position {notional:.2f} USDT unter Bitget-Minimum.")
                 save_state(state); continue
             if dry_run:
@@ -171,9 +193,12 @@ def run(dry_run: bool = False, now: pd.Timestamp = None):
             try:
                 order = ex.place_market_order(symbol, side, amount, margin_mode=cfg['margin_mode'])
             except Exception as e:
-                notify(f"ORACLEBOT Trend-Pool: Einstieg {coin} fehlgeschlagen: {e}")
-                save_state(state); continue
-            live = ex.fetch_open_positions_strict(symbol)
+                # NICHT als erledigt markieren: der naechste Lauf versucht es erneut, solange die Nachholfrist laeuft
+                notify(f"ORACLEBOT Trend-Pool: Einstieg {coin} fehlgeschlagen ({e}) -- neuer Versuch im naechsten "
+                       f"Lauf (Nachholfrist {cfg.get('entry_grace_hours', 2)} h).")
+                continue
+            entered.add((a['id'], a['entry_ts'])); state['entered'].append([a['id'], a['entry_ts'].isoformat()])
+            live = [x for x in ex.fetch_open_positions_strict(symbol) if x.get('side') == ('long' if a['dir'] > 0 else 'short')]
             fill = float((live[0].get('entryPrice') if live else None) or order.get('average') or price)
             filled = float(live[0].get('contracts')) if live else float(order.get('filled') or amount)
             stop = fill * (1 - a['dir'] * cfg['safety_stop_pct'] / 100)

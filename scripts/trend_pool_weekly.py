@@ -84,7 +84,7 @@ def main():
     secrets = _secrets()
     from oraclebot.utils.exchange import Exchange
     ex = Exchange(secrets['oraclebot'][0])
-    sel = run_selection(cfg, ex.exchange, ex.fetch_balance_total_usdt())
+    sel = run_selection(cfg, ex.exchange, ex.fetch_margin_balances()['realized_equity'])
     msg = format_selection(sel)
     print(msg)
     if a.dry_run:

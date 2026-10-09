@@ -125,6 +125,17 @@ class Exchange:
             raise RuntimeError(f"Gesamtkapital nicht ermittelbar: {balance}")
         return float(total)
 
+    def fetch_margin_balances(self) -> dict:
+        """USDT-Futures-Konto direkt von Bitget: equity (inkl. unrealisiertem PnL), unrealized, available (frei fuer
+        neue Marge) und realized_equity = equity - unrealized. Wirft bei Fehlern.
+
+        Fund 2026-10-09: Slots aus dem Gesamtkapital INKL. unrealisiertem Gewinn zu bemessen ging schief -- Bitget kann
+        unrealisierten Gewinn isolierter Positionen nicht als Marge verwenden ('order amount exceeds the balance')."""
+        a = self.exchange.privateMixGetV2MixAccountAccounts({'productType': 'USDT-FUTURES'})['data']
+        a = next(x for x in a if x.get('marginCoin') == 'USDT')
+        equity, unreal, avail = float(a['accountEquity']), float(a.get('unrealizedPL') or 0), float(a['available'])
+        return {'equity': equity, 'unrealized': unreal, 'available': avail, 'realized_equity': equity - unreal}
+
     def fetch_closed_positions(self, symbol: str, limit: int = 100) -> list:
         """Geschlossene Positionen (Entry/Exit-Preis, PnL, Open/Close-Zeit) je Symbol.
 
