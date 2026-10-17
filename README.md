@@ -1,10 +1,3 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/%F0%9F%9A%A7%20BAUSTELLE-nicht%20live-orange?style=for-the-badge" alt="Baustelle – nicht live">
-</p>
-
-> 🚧 **Baustelle:** Dieser Bot ist aktuell **nicht live** und wird weiterentwickelt.
-
-# oraclebot — Trend-Pool
 
 ![Status](https://img.shields.io/badge/status-live-brightgreen)
 ![Strategie](https://img.shields.io/badge/strategie-zwei--ebenen--renko-blueviolet)
