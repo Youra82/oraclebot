@@ -1,3 +1,4 @@
+# oraclebot — Trend-Pool
 
 ![Status](https://img.shields.io/badge/status-live-brightgreen)
 ![Strategie](https://img.shields.io/badge/strategie-zwei--ebenen--renko-blueviolet)
